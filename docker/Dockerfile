@@ -10,21 +10,26 @@ RUN apt-get update && \
     locale-gen en_US en_US.UTF-8 && \
     update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 && \
     curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | apt-key add - && \
-    echo "deb http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2-latest.list && \
+    echo "deb http://packages.ros.org/ros2/ubuntu jammy main" > /etc/apt/sources.list.d/ros2-latest.list && \
     apt-get update && \
     apt-get install -y ros-humble-ros-base ros-humble-rosbridge-suite && \
     rm -rf /var/lib/apt/lists/*
 
-ENV LANG en_US.UTF-8
-ENV LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
 
 # Setup ROS environment
 SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
 ENV ROS_DISTRO=humble
 
-# Expose ports: 9090 (rosbridge)
-EXPOSE 9090
 
 # Start rosbridge
 CMD source /opt/ros/humble/setup.bash && ros2 launch rosbridge_server rosbridge_websocket_launch.xml 
+
+# Copy entrypoint and graph introspector
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+COPY ros2_utils/ros2_graph_introspector.py /ros2_ws/ros2_graph_introspector.py
+
+ENTRYPOINT ["/entrypoint.sh"] 

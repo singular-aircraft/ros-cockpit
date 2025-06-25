@@ -4,6 +4,7 @@ import ROSLIB from 'roslib';
 import githubLogo from '../assets/github-mark.svg';
 import { useRef as chartRef, useEffect as chartEffect } from 'react';
 import { Chart, LineController, LineElement, PointElement, LinearScale, Title, CategoryScale } from 'chart.js';
+import * as d3 from 'd3';
 Chart.register(LineController, LineElement, PointElement, LinearScale, Title, CategoryScale);
 
 function toHex(val) {
@@ -87,13 +88,20 @@ function RosMonitorWidget({ panelId, host }) {
   const [showHex, setShowHex] = useState(false);
   const timestampsRef = useRef([]); // Store timestamps of received messages
   const [isConnected, setIsConnected] = useState(false);
-  const [viewMode, setViewMode] = useState('messages'); // 'messages' or 'chart'
+  const [viewMode, setViewMode] = useState('messages'); // 'messages', 'chart', or 'nodes'
   const chartCanvasRef = chartRef(null);
   const chartInstanceRef = chartRef(null);
   const [numericFields, setNumericFields] = useState([]);
   const [selectedField, setSelectedField] = useState('');
   const [messageType, setMessageType] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('');
+  const [nodes, setNodes] = useState([]);
+  const [nodeTopics, setNodeTopics] = useState([]);
+  const [publishers, setPublishers] = useState({});
+  const [subscribers, setSubscribers] = useState({});
+  const [services, setServices] = useState([]);
+  const [serviceNodes, setServiceNodes] = useState({});
+  const [graphData, setGraphData] = useState(null);
 
   // Al montar, lee el topic guardado
   useEffect(() => {
@@ -336,6 +344,382 @@ function RosMonitorWidget({ panelId, host }) {
     };
   }, [messages, selectedField, viewMode, chartCanvasRef, selectedTopic]);
 
+  // Fetch nodes and topics when 'nodes' view is selected
+  useEffect(() => {
+    if (viewMode !== 'nodes') return;
+    const ros = rosInit(host);
+    // Fetch nodes
+    const nodesService = new ROSLIB.Service({
+      ros,
+      name: '/rosapi/nodes',
+      serviceType: 'rosapi/Nodes',
+    });
+    nodesService.callService(new ROSLIB.ServiceRequest({}), (result) => {
+      setNodes(result.nodes || []);
+    });
+    // Fetch topics
+    const topicsService = new ROSLIB.Service({
+      ros,
+      name: '/rosapi/topics',
+      serviceType: 'rosapi/Topics',
+    });
+    topicsService.callService(new ROSLIB.ServiceRequest({}), (result) => {
+      setNodeTopics(result.topics || []);
+    });
+    // Fetch publishers
+    const publishersService = new ROSLIB.Service({
+      ros,
+      name: '/rosapi/publishers',
+      serviceType: 'rosapi/Publishers',
+    });
+    publishersService.callService(new ROSLIB.ServiceRequest({}), (result) => {
+      setPublishers(result.publishers || {});
+    });
+    // Fetch subscribers
+    const subscribersService = new ROSLIB.Service({
+      ros,
+      name: '/rosapi/subscribers',
+      serviceType: 'rosapi/Subscribers',
+    });
+    subscribersService.callService(new ROSLIB.ServiceRequest({}), (result) => {
+      setSubscribers(result.subscribers || {});
+    });
+    // Fetch services
+    const servicesService = new ROSLIB.Service({
+      ros,
+      name: '/rosapi/services',
+      serviceType: 'rosapi/Services',
+    });
+    servicesService.callService(new ROSLIB.ServiceRequest({}), (result) => {
+      setServices(result.services || []);
+    });
+    // Fetch service_node (which node offers each service)
+    // We'll fetch for each service
+    setServiceNodes({}); // clear before fetching
+    (result => {
+      if (!result.services) return;
+      const serviceNodeMap = {};
+      let count = 0;
+      result.services.forEach(service => {
+        const serviceNodeService = new ROSLIB.Service({
+          ros,
+          name: '/rosapi/service_node',
+          serviceType: 'rosapi/ServiceNode',
+        });
+        serviceNodeService.callService(new ROSLIB.ServiceRequest({ service }), (res) => {
+          serviceNodeMap[service] = res.node;
+          count++;
+          if (count === result.services.length) {
+            setServiceNodes(serviceNodeMap);
+          }
+        });
+      });
+    })({ services: [] }); // will be called again below after services fetched
+    // When services are fetched, fetch service_node for each
+    servicesService.callService(new ROSLIB.ServiceRequest({}), (result) => {
+      if (!result.services) return;
+      const serviceNodeMap = {};
+      let count = 0;
+      result.services.forEach(service => {
+        const serviceNodeService = new ROSLIB.Service({
+          ros,
+          name: '/rosapi/service_node',
+          serviceType: 'rosapi/ServiceNode',
+        });
+        serviceNodeService.callService(new ROSLIB.ServiceRequest({ service }), (res) => {
+          serviceNodeMap[service] = res.node;
+          count++;
+          if (count === result.services.length) {
+            setServiceNodes(serviceNodeMap);
+          }
+        });
+      });
+    });
+  }, [viewMode, host]);
+
+  // Debug: log publishers and subscribers
+  console.log('publishers:', publishers);
+  console.log('subscribers:', subscribers);
+
+  // Build graph data
+  const allNodes = [
+    ...nodes.map(id => ({ id, type: 'node' })),
+    ...nodeTopics.map(id => ({ id, type: 'topic' })),
+    ...services.map(id => ({ id, type: 'service' })),
+  ];
+  const nodeMap = Object.fromEntries(allNodes.map(n => [n.id, n]));
+  let links = [];
+  // Topic publishers: node --(publish)--> topic
+  Object.entries(publishers).forEach(([topic, pubs]) => {
+    pubs.forEach(node => {
+      if (nodeMap[node] && nodeMap[topic]) {
+        links.push({ source: node, target: topic, type: 'publish' });
+      }
+    });
+  });
+  // Topic subscribers: topic --(subscribe)--> node
+  Object.entries(subscribers).forEach(([topic, subs]) => {
+    subs.forEach(node => {
+      if (nodeMap[node] && nodeMap[topic]) {
+        links.push({ source: topic, target: node, type: 'subscribe' });
+      }
+    });
+  });
+  // Services: node --(offers)--> service
+  Object.entries(serviceNodes).forEach(([service, node]) => {
+    if (nodeMap[node] && nodeMap[service]) {
+      links.push({ source: node, target: service, type: 'service' });
+    }
+  });
+  // Filter out orphan nodes (no links)
+  const connectedIds = new Set();
+  links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
+  const nodeList = allNodes.filter(n => connectedIds.has(n.id));
+
+  // Subscribe to /ros2_graph topic if available
+  useEffect(() => {
+    if (viewMode !== 'nodes') return;
+    const ros = rosInit(host);
+    const topic = new ROSLIB.Topic({
+      ros,
+      name: '/ros2_graph',
+      messageType: 'std_msgs/String',
+    });
+    const handler = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        setGraphData(data);
+      } catch (e) {
+        console.warn('Failed to parse /ros2_graph message:', e);
+      }
+    };
+    topic.subscribe(handler);
+    return () => {
+      topic.unsubscribe();
+    };
+  }, [viewMode, host]);
+
+  // D3.js effect for node graph (use graphData if available)
+  useEffect(() => {
+    if (viewMode !== 'nodes') return;
+    const containerId = `d3-nodes-graph-${panelId}`;
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+
+    // Use graphData from /ros2_graph if available
+    let allNodes = [];
+    let links = [];
+    if (graphData) {
+      // Build nodes: type 'node', 'topic', 'service'
+      allNodes = [
+        ...(graphData.nodes || []).map(n => ({ id: n.name, type: 'node' })),
+        ...(graphData.topics || []).map(t => ({ id: t.name, type: 'topic' })),
+        ...(graphData.services || []).map(s => ({ id: s.name, type: 'service' })),
+      ];
+      // Build links from publishers/subscribers
+      (graphData.publishers || []).forEach(pub => {
+        links.push({ source: pub.node, target: pub.topic, type: 'publish' });
+      });
+      (graphData.subscribers || []).forEach(sub => {
+        links.push({ source: sub.topic, target: sub.node, type: 'subscribe' });
+      });
+      // (Optionally, add service links if present)
+      if (graphData.service_providers) {
+        graphData.service_providers.forEach(sp => {
+          links.push({ source: sp.node, target: sp.service, type: 'service' });
+        });
+      }
+    } else {
+      // Fallback to old logic (no links in ROS2)
+      // Filter out parameter-related and lifecycle-related topics/services (partial match)
+      const PARAM_FILTER = [
+        'get_parameters', 'set_parameters', 'describe_parameters',
+        'list_parameters', 'get_parameter_types', 'set_parameters_atomically',
+        'available_transitions', 'change_state', 'set_state', 'get_state',
+        'get_available_states', 'get_available_transitions', 'trigger_transition',
+        'get_transition_graph', 'transition_event'
+      ];
+      const isParamRelated = name => PARAM_FILTER.some(f => name.includes(f));
+      const filteredTopics = nodeTopics.filter(t => !isParamRelated(t));
+      const filteredServices = services.filter(s => !isParamRelated(s));
+      allNodes = [
+        ...nodes.map(id => ({ id, type: 'node' })),
+        ...filteredTopics.map(id => ({ id, type: 'topic' })),
+        ...filteredServices.map(id => ({ id, type: 'service' })),
+      ];
+      // No links in fallback for ROS2
+      links = [];
+    }
+    // Identify orphan nodes (no links)
+    const connectedIds = new Set();
+    links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
+    const orphanNodes = allNodes.filter(n => !connectedIds.has(n.id));
+    const nodeList = allNodes;
+    // Build graph data
+    console.log('D3 nodeList:', nodeList);
+    console.log('D3 links:', links);
+    // D3 force-directed graph
+    const width = container.offsetWidth || 600;
+    const height = container.offsetHeight || 400;
+    const svg = d3.select(container)
+      .append('svg')
+      .attr('width', width)
+      .attr('height', height)
+      .style('background', '#222'); // visible SVG background
+
+    // Add zoom/pan support
+    const g = svg.append('g');
+    svg.call(d3.zoom()
+      .scaleExtent([0.1, 2])
+      .on('zoom', (event) => {
+        g.attr('transform', event.transform);
+      })
+    );
+
+    // D3 simulation with extra force for orphans
+    const simulation = d3.forceSimulation(nodeList)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+      .force('charge', d3.forceManyBody().strength(-400))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('orphanCenter', d3.forceManyBody().strength(0)) // placeholder, will override below
+      .force('orphanCollide', d3.forceCollide().radius(d => orphanNodes.includes(d) ? 56 : 0).strength(1));
+    // Apply strong centering force only to orphans
+    simulation.force('orphanCenter', function(alpha) {
+      orphanNodes.forEach(d => {
+        d.vx = (width / 2 - d.x) * 0.2 * alpha;
+        d.vy = (height / 2 - d.y) * 0.2 * alpha;
+      });
+    });
+
+    const link = g.append('g')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 6)
+      .selectAll('line')
+      .data(links)
+      .enter().append('line')
+      .attr('stroke', '#fff')
+      .attr('stroke-dasharray', d => d.type === 'service' ? '4,2' : '');
+    const node = g.append('g')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2)
+      .selectAll('circle')
+      .data(nodeList)
+      .enter().append('circle')
+      .attr('r', d => d.type === 'node' ? 44 : d.type === 'topic' ? 32 : 24)
+      .attr('fill', d => d.type === 'node' ? '#2ecc40' : d.type === 'topic' ? '#43e' : '#fa0')
+      .call(d3.drag()
+        .on('start', dragstarted)
+        .on('drag', dragged)
+        .on('end', dragended));
+    const label = g.append('g')
+      .selectAll('text')
+      .data(nodeList)
+      .enter().append('text')
+      .attr('text-anchor', 'middle')
+      .attr('dy', 5)
+      .attr('fill', '#fff')
+      .attr('font-size', 9)
+      .text(d => d.id.replace(/^\//, ''));
+    simulation.on('tick', () => {
+      // Helper to get radius by type
+      function getRadius(d) {
+        return d.type === 'node' ? 44 : d.type === 'topic' ? 32 : 24;
+      }
+      // Custom link rendering to stop at edge of circles
+      link
+        .attr('x1', d => {
+          const r = getRadius(d.source);
+          const dx = d.target.x - d.source.x;
+          const dy = d.target.y - d.source.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          return d.source.x + (dx * r) / dist;
+        })
+        .attr('y1', d => {
+          const r = getRadius(d.source);
+          const dx = d.target.x - d.source.x;
+          const dy = d.target.y - d.source.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          return d.source.y + (dy * r) / dist;
+        })
+        .attr('x2', d => {
+          const r = getRadius(d.target);
+          const dx = d.source.x - d.target.x;
+          const dy = d.source.y - d.target.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          return d.target.x + (dx * r) / dist;
+        })
+        .attr('y2', d => {
+          const r = getRadius(d.target);
+          const dx = d.source.x - d.target.x;
+          const dy = d.source.y - d.target.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          return d.target.y + (dy * r) / dist;
+        });
+      node
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y);
+      label
+        .attr('x', d => d.x)
+        .attr('y', d => d.y);
+    });
+
+    // Drag functions for D3 nodes
+    function dragstarted(event, d) {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+    function dragged(event, d) {
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+    function dragended(event, d) {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+
+    // Fit to view after simulation stabilizes
+    function fitToView() {
+      const all = nodeList;
+      if (!all.length) return;
+      // Validate coordinates
+      if (all.some(d => typeof d.x !== 'number' || typeof d.y !== 'number' || isNaN(d.x) || isNaN(d.y))) {
+        console.warn('Some node coordinates are invalid, skipping fitToView');
+        return;
+      }
+      const minX = Math.min(...all.map(d => d.x));
+      const maxX = Math.max(...all.map(d => d.x));
+      const minY = Math.min(...all.map(d => d.y));
+      const maxY = Math.max(...all.map(d => d.y));
+      const graphWidth = maxX - minX;
+      const graphHeight = maxY - minY;
+      const margin = 40;
+      const scale = Math.min(
+        width / (graphWidth + 2 * margin),
+        height / (graphHeight + 2 * margin),
+        1
+      );
+      const tx = (width - scale * (minX + maxX)) / 2;
+      const ty = (height - scale * (minY + maxY)) / 2;
+      svg.transition().duration(500).call(
+        d3.zoom().transform,
+        d3.zoomIdentity.translate(tx, ty).scale(scale)
+      );
+    }
+    // Wait for simulation to stabilize, then fit
+    simulation.on('end', fitToView);
+    // Also fit after a short timeout in case 'end' doesn't fire
+    setTimeout(fitToView, 1500);
+
+    // Cleanup on unmount or data change
+    return () => {
+      simulation.stop();
+      container.innerHTML = '';
+    };
+  }, [viewMode, nodes, nodeTopics, publishers, subscribers, services, serviceNodes, panelId, graphData]);
+
   return (
     <div className="ros-monitor-widget">
       <div className="widget-header">
@@ -385,6 +769,7 @@ function RosMonitorWidget({ panelId, host }) {
           <div className="view-toggle">
             <button onClick={() => setViewMode('messages')} className={viewMode === 'messages' ? 'active' : ''}>Messages</button>
             <button onClick={() => setViewMode('chart')} className={viewMode === 'chart' ? 'active' : ''}>Chart</button>
+            <button onClick={() => setViewMode('nodes')} className={viewMode === 'nodes' ? 'active' : ''}>Nodes</button>
           </div>
 
           {viewMode === 'messages' && (
@@ -419,6 +804,15 @@ function RosMonitorWidget({ panelId, host }) {
               ) : (
                 <p>No plottable (numeric) fields found in message type: {messageType}</p>
               )}
+            </div>
+          )}
+
+          {viewMode === 'nodes' && (
+            <div className="nodes-view">
+              {/* D3 graph container with fixed size and border for debug */}
+              <div id={`d3-nodes-graph-${panelId}`} style={{ width: 800, maxWidth: '100%', height: 500, margin: '24px auto', background: '#222', border: '2px solid #646cff', borderRadius: 8, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {/* D3.js node graph will appear here. */}
+              </div>
             </div>
           )}
         </div>

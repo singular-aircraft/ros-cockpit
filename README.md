@@ -1,32 +1,44 @@
-# ros2-monitor
+# ROS2 Monitor
 
-Frontend to monitor ROS2 data using rosbridge, React, and Three.js.
+This project provides a web-based monitor for ROS2 systems, including a dynamic graph visualization of nodes, topics, and services.
 
-## Requirements
-- rosbridge_server running on your ROS2 machine (default at ws://localhost:9090)
-- Node.js and npm installed
+## Running with Docker
 
-## Installation
+You need to launch **two Docker containers**:
 
-```bash
-npm install
-```
+1. **rosbridge** (for WebSocket communication with the frontend)
+2. **graph inspector** (to publish the ROS2 graph structure as JSON)
 
-## Usage
+### 1. Launch rosbridge
 
-```bash
-npm run dev
-```
-
-The app will open at http://localhost:5173 (by default).
-
-## rosbridge configuration
-Make sure you have rosbridge_server running:
+By default, the container will launch rosbridge:
 
 ```bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+docker run \
+  --rm \
+  singularaircraft/ros2-rosbridge:latest
 ```
 
----
+Or explicitly:
 
-Modify and expand the widgets as needed!
+```bash
+docker run \
+  --rm \
+  -e ROS2_MONITOR_NODE=bridge \
+  singularaircraft/ros2-rosbridge:latest
+```
+
+### 2. Launch the graph inspector
+
+This container publishes the ROS2 graph structure on the `/ros2_graph` topic as JSON:
+
+```bash
+docker run \
+  --rm \
+  -e ROS2_MONITOR_NODE=inspector \
+  singularaircraft/ros2-rosbridge:latest
+```
+
+## Frontend
+
+`npm run dev`
