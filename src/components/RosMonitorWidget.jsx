@@ -77,7 +77,7 @@ function MessageRenderer({ data, showHex }) {
   );
 }
 
-function RosMonitorWidget({ panelId, host }) {
+function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   const [topics, setTopics] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -88,7 +88,7 @@ function RosMonitorWidget({ panelId, host }) {
   const [showHex, setShowHex] = useState(false);
   const timestampsRef = useRef([]); // Store timestamps of received messages
   const [isConnected, setIsConnected] = useState(false);
-  const [viewMode, setViewMode] = useState('messages'); // 'messages', 'chart', or 'nodes'
+  const [viewMode, setViewMode] = useState(initialViewMode === 'nodes' ? 'nodes' : 'messages');
   const chartCanvasRef = chartRef(null);
   const chartInstanceRef = chartRef(null);
   const [numericFields, setNumericFields] = useState([]);
@@ -101,7 +101,18 @@ function RosMonitorWidget({ panelId, host }) {
   const [subscribers, setSubscribers] = useState({});
   const [services, setServices] = useState([]);
   const [serviceNodes, setServiceNodes] = useState({});
-  const [graphData, setGraphData] = useState(null);
+  const [topicInfo, setTopicInfo] = useState(null);
+  const [topicInfoLoading, setTopicInfoLoading] = useState(false);
+  const [graphServiceData, setGraphServiceData] = useState(null);
+  const [graphServiceLoading, setGraphServiceLoading] = useState(false);
+  const [graphServiceError, setGraphServiceError] = useState(null);
+
+  // Añadir referencias para D3
+  const d3SimRef = useRef(null);
+  const d3NodesRef = useRef([]);
+  const d3LinksRef = useRef([]);
+  const d3SvgRef = useRef(null);
+  const d3GRef = useRef(null);
 
   // Al montar, lee el topic guardado
   useEffect(() => {
@@ -113,14 +124,106 @@ function RosMonitorWidget({ panelId, host }) {
     const key = `rosmonitor_panel_topic_${panelId}`;
     const saved = localStorage.getItem(key);
     console.log(`panelId: ${panelId}, saved: ${saved}`);
-    if (saved) setSelectedTopic(saved);
+    if (saved) {
+      setSelectedTopic(saved);
+    }
   }, [panelId]);
+
+  // Fetch topic info when host changes and there's a selected topic
+  useEffect(() => {
+    if (selectedTopic && host) {
+      fetchTopicInfo(selectedTopic);
+    }
+  }, [host, selectedTopic]);
 
   // Al cambiar, guarda el topic en localStorage
   const handleTopicChange = (topic) => {
     setSelectedTopic(topic);
     const key = `rosmonitor_panel_topic_${panelId}`;
     localStorage.setItem(key, topic);
+    
+    // Fetch verbose topic info when topic changes
+    if (topic) {
+      fetchTopicInfo(topic);
+    } else {
+      setTopicInfo(null);
+    }
+  };
+
+  // Function to fetch verbose topic information
+  const fetchTopicInfo = (topicName) => {
+    setTopicInfoLoading(true);
+    setTopicInfo(null);
+    
+    const ros = rosInit(host);
+    
+    // Try to get verbose info using a custom ROS2 service
+    const topicInfoService = new ROSLIB.Service({
+      ros: ros,
+      name: '/get_topic_info',
+      serviceType: 'ros2_monitor_srvs/GetTopicInfo'
+    });
+    
+    const request = new ROSLIB.ServiceRequest({
+      topic_name: topicName  // Pass topic name in the topic_name field
+    });
+    
+    topicInfoService.callService(request, (result) => {
+      if (result && result.success) {
+        try {
+          const parsedInfo = JSON.parse(result.message);
+          setTopicInfo({
+            name: topicName,
+            type: parsedInfo.type || 'Unknown',
+            publishers: parsedInfo.publishers || [],
+            subscribers: parsedInfo.subscribers || [],
+            publisherCount: parsedInfo.publisher_count || 0,
+            subscriberCount: parsedInfo.subscriber_count || 0,
+            rawInfo: parsedInfo
+          });
+        } catch (error) {
+          console.error('Error parsing topic info:', error);
+          setTopicInfo({ error: 'Error parsing topic information' });
+        }
+      } else {
+        console.warn('Service call failed, falling back to basic info');
+        // Fallback to basic info
+        fetchBasicTopicInfo(topicName, ros);
+      }
+      setTopicInfoLoading(false);
+    }, (error) => {
+      console.warn('Service not available, falling back to basic info:', error);
+      // Fallback to basic info
+      fetchBasicTopicInfo(topicName, ros);
+    });
+  };
+
+  // Fallback function for basic topic info
+  const fetchBasicTopicInfo = (topicName, ros) => {
+    ros.getTopicType(topicName, (type) => {
+      if (!type) {
+        setTopicInfo({ error: 'Could not get topic type' });
+        setTopicInfoLoading(false);
+        return;
+      }
+      
+      const topicInfo = {
+        name: topicName,
+        type: type,
+        publishers: ['Publisher info not available via WebSocket'],
+        subscribers: ['Subscriber info not available via WebSocket'],
+        publisherCount: 0,
+        subscriberCount: 0,
+        note: 'For detailed publisher/subscriber info, use "ros2 topic info --verbose" in terminal'
+      };
+      
+      setTopicInfo(topicInfo);
+      setTopicInfoLoading(false);
+    }, (error) => {
+      console.error('Error getting topic type:', error);
+      setTopicInfo({ error: 'Could not get topic type' });
+      setTopicInfoLoading(false);
+    });
   };
 
   // Recreate ros connection when host or selectedTopic changes
@@ -186,6 +289,7 @@ function RosMonitorWidget({ panelId, host }) {
 
   // Filter topics by the filter string
   const filteredTopics = topics.filter((topic) => topic.toLowerCase().includes(filter.toLowerCase()));
+  const isNodesMode = viewMode === 'nodes';
 
   // Calculate frequency (Hz) from timestamps
   let hz = 0;
@@ -437,10 +541,6 @@ function RosMonitorWidget({ panelId, host }) {
     });
   }, [viewMode, host]);
 
-  // Debug: log publishers and subscribers
-  console.log('publishers:', publishers);
-  console.log('subscribers:', subscribers);
-
   // Build graph data
   const allNodes = [
     ...nodes.map(id => ({ id, type: 'node' })),
@@ -476,197 +576,160 @@ function RosMonitorWidget({ panelId, host }) {
   links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
   const nodeList = allNodes.filter(n => connectedIds.has(n.id));
 
-  // Subscribe to /ros2_graph topic if available
+  // Llama automáticamente al servicio al entrar en la vista 'nodes'
   useEffect(() => {
     if (viewMode !== 'nodes') return;
-    const ros = rosInit(host);
-    const topic = new ROSLIB.Topic({
-      ros,
-      name: '/ros2_graph',
-      messageType: 'std_msgs/String',
-    });
-    const handler = (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        setGraphData(data);
-      } catch (e) {
-        console.warn('Failed to parse /ros2_graph message:', e);
-      }
-    };
-    topic.subscribe(handler);
-    return () => {
-      topic.unsubscribe();
-    };
+    fetchGraphInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, host]);
 
-  // D3.js effect for node graph (use graphData if available)
+  // Reemplaza el efecto D3.js para el grafo de nodos para usar graphServiceData
   useEffect(() => {
-    if (viewMode !== 'nodes') return;
+    if (viewMode !== 'nodes' || !graphServiceData) return;
     const containerId = `d3-nodes-graph-${panelId}`;
     const container = document.getElementById(containerId);
     if (!container) return;
-    container.innerHTML = '';
 
-    // Use graphData from /ros2_graph if available
+    // Build nodes and links from graphServiceData
     let allNodes = [];
     let links = [];
-    if (graphData) {
-      // Build nodes: type 'node', 'topic', 'service'
-      allNodes = [
-        ...(graphData.nodes || []).map(n => ({ id: n.name, type: 'node' })),
-        ...(graphData.topics || []).map(t => ({ id: t.name, type: 'topic' })),
-        ...(graphData.services || []).map(s => ({ id: s.name, type: 'service' })),
-      ];
-      // Build links from publishers/subscribers
-      (graphData.publishers || []).forEach(pub => {
+    const TOPIC_FILTER = ['/rosout', '/parameter_events'];
+    const isFiltered = name => TOPIC_FILTER.includes(name);
+    allNodes = [
+      ...(graphServiceData.nodes || []).map(n => ({ id: n.name, type: 'node' })),
+      ...(graphServiceData.topics || []).filter(t => !isFiltered(t.name)).map(t => ({ id: t.name, type: 'topic' })),
+      ...(graphServiceData.services || []).filter(s => !isFiltered(s.name)).map(s => ({ id: s.name, type: 'service' })),
+    ];
+    (graphServiceData.publishers || []).forEach(pub => {
+      if (!isFiltered(pub.topic))
         links.push({ source: pub.node, target: pub.topic, type: 'publish' });
-      });
-      (graphData.subscribers || []).forEach(sub => {
+    });
+    (graphServiceData.subscribers || []).forEach(sub => {
+      if (!isFiltered(sub.topic))
         links.push({ source: sub.topic, target: sub.node, type: 'subscribe' });
-      });
-      // (Optionally, add service links if present)
-      if (graphData.service_providers) {
-        graphData.service_providers.forEach(sp => {
+    });
+    if (graphServiceData.service_providers) {
+      graphServiceData.service_providers.forEach(sp => {
+        if (!isFiltered(sp.service))
           links.push({ source: sp.node, target: sp.service, type: 'service' });
-        });
-      }
-    } else {
-      // Fallback to old logic (no links in ROS2)
-      // Filter out parameter-related and lifecycle-related topics/services (partial match)
-      const PARAM_FILTER = [
-        'get_parameters', 'set_parameters', 'describe_parameters',
-        'list_parameters', 'get_parameter_types', 'set_parameters_atomically',
-        'available_transitions', 'change_state', 'set_state', 'get_state',
-        'get_available_states', 'get_available_transitions', 'trigger_transition',
-        'get_transition_graph', 'transition_event'
-      ];
-      const isParamRelated = name => PARAM_FILTER.some(f => name.includes(f));
-      const filteredTopics = nodeTopics.filter(t => !isParamRelated(t));
-      const filteredServices = services.filter(s => !isParamRelated(s));
-      allNodes = [
-        ...nodes.map(id => ({ id, type: 'node' })),
-        ...filteredTopics.map(id => ({ id, type: 'topic' })),
-        ...filteredServices.map(id => ({ id, type: 'service' })),
-      ];
-      // No links in fallback for ROS2
-      links = [];
+      });
     }
-    // Identify orphan nodes (no links)
+    // Identificar nodos huérfanos
     const connectedIds = new Set();
     links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
-    const orphanNodes = allNodes.filter(n => !connectedIds.has(n.id));
     const nodeList = allNodes;
-    // Build graph data
-    console.log('D3 nodeList:', nodeList);
-    console.log('D3 links:', links);
-    // D3 force-directed graph
     const width = container.offsetWidth || 600;
     const height = container.offsetHeight || 400;
-    const svg = d3.select(container)
-      .append('svg')
-      .attr('width', width)
-      .attr('height', height)
-      .style('background', '#222'); // visible SVG background
 
-    // Add zoom/pan support
-    const g = svg.append('g');
-    svg.call(d3.zoom()
-      .scaleExtent([0.1, 2])
-      .on('zoom', (event) => {
-        g.attr('transform', event.transform);
-      })
-    );
+    // --- SVG y G persistentes ---
+    let svg = d3SvgRef.current;
+    let g = d3GRef.current;
+    if (!svg) {
+      svg = d3.select(container)
+        .append('svg')
+        .attr('width', width)
+        .attr('height', height)
+        .style('background', '#222');
+      d3SvgRef.current = svg;
+      g = svg.append('g');
+      d3GRef.current = g;
+      svg.call(d3.zoom()
+        .scaleExtent([0.1, 2])
+        .on('zoom', (event) => {
+          g.attr('transform', event.transform);
+        })
+      );
+    }
 
-    // D3 simulation with extra force for orphans
-    const simulation = d3.forceSimulation(nodeList)
-      .force('link', d3.forceLink(links).id(d => d.id).distance(120))
-      .force('charge', d3.forceManyBody().strength(-400))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('orphanCenter', d3.forceManyBody().strength(0)) // placeholder, will override below
-      .force('orphanCollide', d3.forceCollide().radius(d => orphanNodes.includes(d) ? 56 : 0).strength(1));
-    // Apply strong centering force only to orphans
-    simulation.force('orphanCenter', function(alpha) {
-      orphanNodes.forEach(d => {
-        d.vx = (width / 2 - d.x) * 0.2 * alpha;
-        d.vy = (height / 2 - d.y) * 0.2 * alpha;
-      });
+    // --- Mantener posiciones previas ---
+    const prevNodes = d3NodesRef.current;
+    const prevNodeMap = Object.fromEntries(prevNodes.map(n => [n.id, n]));
+    nodeList.forEach(n => {
+      const prev = prevNodeMap[n.id];
+      if (prev) {
+        n.x = prev.x;
+        n.y = prev.y;
+        n.vx = prev.vx;
+        n.vy = prev.vy;
+        n.fx = prev.fx;
+        n.fy = prev.fy;
+      }
     });
+    d3NodesRef.current = nodeList;
+    d3LinksRef.current = links;
 
-    const link = g.append('g')
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 6)
-      .selectAll('line')
-      .data(links)
-      .enter().append('line')
-      .attr('stroke', '#fff')
+    // --- Data join para links ---
+    // Asegura que source y target sean siempre ids (string)
+    links = links.map(l => ({
+      ...l,
+      source: typeof l.source === 'object' ? l.source.id : l.source,
+      target: typeof l.target === 'object' ? l.target.id : l.target
+    }));
+    const linkSel = g.selectAll('line').data(links, d => d.source + '-' + d.target + '-' + d.type);
+    linkSel.exit().remove();
+    linkSel.enter()
+      .append('line')
+      .attr('stroke', '#ffd93d')
+      .attr('stroke-width', 10)
       .attr('stroke-dasharray', d => d.type === 'service' ? '4,2' : '');
-    const node = g.append('g')
+    // --- Data join para nodos ---
+    const nodeSel = g.selectAll('circle').data(nodeList, d => d.id);
+    nodeSel.exit().remove();
+    nodeSel.enter()
+      .append('circle')
       .attr('stroke', '#fff')
       .attr('stroke-width', 2)
-      .selectAll('circle')
-      .data(nodeList)
-      .enter().append('circle')
       .attr('r', d => d.type === 'node' ? 44 : d.type === 'topic' ? 32 : 24)
       .attr('fill', d => d.type === 'node' ? '#2ecc40' : d.type === 'topic' ? '#43e' : '#fa0')
       .call(d3.drag()
         .on('start', dragstarted)
         .on('drag', dragged)
         .on('end', dragended));
-    const label = g.append('g')
-      .selectAll('text')
-      .data(nodeList)
-      .enter().append('text')
+    // --- Data join para labels ---
+    const labelSel = g.selectAll('text').data(nodeList, d => d.id);
+    labelSel.exit().remove();
+    labelSel.enter()
+      .append('text')
+      .attr('fill', '#fff')
+      .attr('font-size', 14)
       .attr('text-anchor', 'middle')
       .attr('dy', 5)
-      .attr('fill', '#fff')
-      .attr('font-size', 9)
-      .text(d => d.id.replace(/^\//, ''));
-    simulation.on('tick', () => {
-      // Helper to get radius by type
-      function getRadius(d) {
-        return d.type === 'node' ? 44 : d.type === 'topic' ? 32 : 24;
-      }
-      // Custom link rendering to stop at edge of circles
-      link
-        .attr('x1', d => {
-          const r = getRadius(d.source);
-          const dx = d.target.x - d.source.x;
-          const dy = d.target.y - d.source.y;
-          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-          return d.source.x + (dx * r) / dist;
-        })
-        .attr('y1', d => {
-          const r = getRadius(d.source);
-          const dx = d.target.x - d.source.x;
-          const dy = d.target.y - d.source.y;
-          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-          return d.source.y + (dy * r) / dist;
-        })
-        .attr('x2', d => {
-          const r = getRadius(d.target);
-          const dx = d.source.x - d.target.x;
-          const dy = d.source.y - d.target.y;
-          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-          return d.target.x + (dx * r) / dist;
-        })
-        .attr('y2', d => {
-          const r = getRadius(d.target);
-          const dx = d.source.x - d.target.x;
-          const dy = d.source.y - d.target.y;
-          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-          return d.target.y + (dy * r) / dist;
-        });
-      node
+      .text(d => d.id);
+    // --- Simulación de fuerzas ---
+    if (!d3SimRef.current) {
+      d3SimRef.current = d3.forceSimulation(nodeList)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+        .force('charge', d3.forceManyBody().strength(-400))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .on('tick', ticked);
+    } else {
+      d3SimRef.current.nodes(nodeList);
+      d3SimRef.current.force('link').links(links);
+      d3SimRef.current.alpha(1).restart();
+    }
+    function ticked() {
+      // Log de posiciones de nodos
+      console.log('[DEBUG][D3] Posiciones de nodos:', d3NodesRef.current.map(n => ({ id: n.id, x: n.x, y: n.y })));
+      // Log de posiciones de links
+      links.forEach(l => {
+        const n1 = typeof l.source === 'object' ? l.source : d3NodesRef.current.find(n => n.id === l.source);
+        const n2 = typeof l.target === 'object' ? l.target : d3NodesRef.current.find(n => n.id === l.target);
+        console.log(`[DEBUG][D3] Link ${n1?.id} -> ${n2?.id}: x1=${n1?.x}, y1=${n1?.y}, x2=${n2?.x}, y2=${n2?.y}`);
+      });
+      g.selectAll('line')
+        .attr('x1', d => (typeof d.source === 'object' ? d.source.x : d3NodesRef.current.find(n => n.id === d.source)?.x))
+        .attr('y1', d => (typeof d.source === 'object' ? d.source.y : d3NodesRef.current.find(n => n.id === d.source)?.y))
+        .attr('x2', d => (typeof d.target === 'object' ? d.target.x : d3NodesRef.current.find(n => n.id === d.target)?.x))
+        .attr('y2', d => (typeof d.target === 'object' ? d.target.y : d3NodesRef.current.find(n => n.id === d.target)?.y));
+      g.selectAll('circle')
         .attr('cx', d => d.x)
         .attr('cy', d => d.y);
-      label
+      g.selectAll('text')
         .attr('x', d => d.x)
         .attr('y', d => d.y);
-    });
-
-    // Drag functions for D3 nodes
+    }
     function dragstarted(event, d) {
-      if (!event.active) simulation.alphaTarget(0.3).restart();
+      if (!event.active && d3SimRef.current) d3SimRef.current.alphaTarget(0.3).restart();
       d.fx = d.x;
       d.fy = d.y;
     }
@@ -675,50 +738,78 @@ function RosMonitorWidget({ panelId, host }) {
       d.fy = event.y;
     }
     function dragended(event, d) {
-      if (!event.active) simulation.alphaTarget(0);
+      if (!event.active && d3SimRef.current) d3SimRef.current.alphaTarget(0);
       d.fx = null;
       d.fy = null;
     }
-
-    // Fit to view after simulation stabilizes
-    function fitToView() {
-      const all = nodeList;
-      if (!all.length) return;
-      // Validate coordinates
-      if (all.some(d => typeof d.x !== 'number' || typeof d.y !== 'number' || isNaN(d.x) || isNaN(d.y))) {
-        console.warn('Some node coordinates are invalid, skipping fitToView');
-        return;
-      }
-      const minX = Math.min(...all.map(d => d.x));
-      const maxX = Math.max(...all.map(d => d.x));
-      const minY = Math.min(...all.map(d => d.y));
-      const maxY = Math.max(...all.map(d => d.y));
-      const graphWidth = maxX - minX;
-      const graphHeight = maxY - minY;
-      const margin = 40;
-      const scale = Math.min(
-        width / (graphWidth + 2 * margin),
-        height / (graphHeight + 2 * margin),
-        1
-      );
-      const tx = (width - scale * (minX + maxX)) / 2;
-      const ty = (height - scale * (minY + maxY)) / 2;
-      svg.transition().duration(500).call(
-        d3.zoom().transform,
-        d3.zoomIdentity.translate(tx, ty).scale(scale)
-      );
-    }
-    // Wait for simulation to stabilize, then fit
-    simulation.on('end', fitToView);
-    // Also fit after a short timeout in case 'end' doesn't fire
-    setTimeout(fitToView, 1500);
-
-    // Cleanup on unmount or data change
+    // Cleanup on unmount
     return () => {
-      simulation.stop();
-      container.innerHTML = '';
+      if (d3SimRef.current) d3SimRef.current.stop();
+      d3SimRef.current = null;
+      if (svg) svg.remove();
+      d3SvgRef.current = null;
+      d3GRef.current = null;
     };
-  }, [viewMode, nodes, nodeTopics, publishers, subscribers, services, serviceNodes, panelId, graphData]);
+  }, [viewMode, graphServiceData, panelId]);
+
+  // Función para llamar al servicio get_graph_info
+  const fetchGraphInfo = () => {
+    setGraphServiceLoading(true);
+    setGraphServiceError(null);
+    setGraphServiceData(null);
+    const ros = rosInit(host);
+    const graphService = new ROSLIB.Service({
+      ros: ros,
+      name: '/get_graph_info',
+      serviceType: 'ros2_monitor_srvs/GetGraphInfo'
+    });
+    const request = new ROSLIB.ServiceRequest({});
+    graphService.callService(request, (result) => {
+      try {
+        const data = JSON.parse(result.graph_json);
+        setGraphServiceData(data);
+        console.log('[DEBUG] Respuesta completa de get_graph_info:', result);
+        if (result && result.graph_json) {
+          try {
+            const graph = typeof result.graph_json === 'string' ? JSON.parse(result.graph_json) : result.graph_json;
+            console.log('[DEBUG] graph.topics:', graph.topics);
+            console.log('[DEBUG] graph.nodes:', graph.nodes);
+            console.log('[DEBUG] graph.publishers:', graph.publishers);
+            console.log('[DEBUG] graph.subscribers:', graph.subscribers);
+            // Construye el array de nodos para D3
+            const nodes = [
+              ...(graph.nodes ? graph.nodes.map(n => ({ id: n.name, ...n })) : []),
+              ...(graph.topics ? graph.topics.map(t => ({ id: t.name, ...t })) : [])
+            ];
+            console.log('[DEBUG] nodos para D3:', nodes);
+            // Construye los links
+            const links = [
+              ...(graph.publishers ? graph.publishers.map(pub => ({ source: pub.node, target: pub.topic, type: 'pub' })) : []),
+              ...(graph.subscribers ? graph.subscribers.map(sub => ({ source: sub.node, target: sub.topic, type: 'sub' })) : [])
+            ];
+            // Chequea que todos los source/target existen en nodos
+            const nodeIds = new Set(nodes.map(n => n.id));
+            const missingSources = links.filter(l => !nodeIds.has(l.source));
+            const missingTargets = links.filter(l => !nodeIds.has(l.target));
+            if (missingSources.length > 0) {
+              console.warn('[DEBUG] Links con source que NO existe en nodos:', missingSources);
+            }
+            if (missingTargets.length > 0) {
+              console.warn('[DEBUG] Links con target que NO existe en nodos:', missingTargets);
+            }
+          } catch (e) {
+            console.error('[DEBUG] Error parseando graph_json:', e);
+          }
+        }
+      } catch (e) {
+        setGraphServiceError('Error parsing graph_json: ' + e);
+      }
+      setGraphServiceLoading(false);
+    }, (err) => {
+      setGraphServiceError('Service call failed: ' + (err?.toString() || 'unknown error'));
+      setGraphServiceLoading(false);
+    });
+  };
 
   return (
     <div className="ros-monitor-widget">
@@ -731,90 +822,259 @@ function RosMonitorWidget({ panelId, host }) {
 
       {error && <p className="error-message">{error}</p>}
 
-      <div className="topic-selection">
-        <input
-          type="text"
-          placeholder="Filter topics..."
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          style={{ marginBottom: '0.5em', width: 'calc(100% - 12px)' }}
-        />
-        {loading ? (
-          <p>Loading topics...</p>
-        ) : (
-          <select
-            onChange={e => handleTopicChange(e.target.value)}
-            value={selectedTopic}
-            size={5}
-          >
-            <option value="">-- Select a topic --</option>
-            {filteredTopics.map((topic) => (
-              <option key={topic} value={topic}>
-                {topic}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      {selectedTopic && (
-        <div className="topic-info">
-          <h3>
-            Topic: {selectedTopic}{' '}
-            <span style={{ color: '#aaa', fontWeight: 'normal' }}>
-              ({hz.toFixed(2)} Hz)
-            </span>
-          </h3>
-
-          <div className="view-toggle">
-            <button onClick={() => setViewMode('messages')} className={viewMode === 'messages' ? 'active' : ''}>Messages</button>
-            <button onClick={() => setViewMode('chart')} className={viewMode === 'chart' ? 'active' : ''}>Chart</button>
-            <button onClick={() => setViewMode('nodes')} className={viewMode === 'nodes' ? 'active' : ''}>Nodes</button>
+      {/* Only show topic selection and info if not in nodes mode */}
+      {!isNodesMode && (
+        <>
+          <div className="topic-selection">
+            <input
+              type="text"
+              placeholder="Filter topics..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              style={{ marginBottom: '0.5em', width: 'calc(100% - 12px)' }}
+            />
+            {loading ? (
+              <p>Loading topics...</p>
+            ) : (
+              <select
+                onChange={e => handleTopicChange(e.target.value)}
+                value={selectedTopic}
+                size={5}
+              >
+                <option value="">-- Select a topic --</option>
+                {filteredTopics.map((topic) => (
+                  <option key={topic} value={topic}>
+                    {topic}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
-          {viewMode === 'messages' && (
-            <div className="messages-view">
-               <div style={{ marginBottom: '1em' }}>
-                <label>
-                  <input type="checkbox" checked={showHex} onChange={(e) => setShowHex(e.target.checked)} />
-                  Show HEX
-                </label>
-              </div>
-              <h4>Latest Message:</h4>
-              {latestMessage ? (
-                <MessageRenderer data={latestMessage} showHex={showHex} />
-              ) : (
-                <p>Waiting for the first message...</p>
-              )}
-            </div>
-          )}
+          {selectedTopic && (
+            <div className="topic-info">
+              <h3>
+                Topic: {selectedTopic}{' '}
+                <span style={{ color: '#aaa', fontWeight: 'normal' }}>
+                  ({hz.toFixed(2)} Hz)
+                </span>
+              </h3>
 
-          {viewMode === 'chart' && (
-            <div className="chart-view">
-              {numericFields.length > 0 ? (
-                <>
-                  <select onChange={(e) => setSelectedField(e.target.value)} value={selectedField}>
-                    <option value="">-- Select a field to plot --</option>
-                    {numericFields.map(f => <option key={f} value={f}>{f}</option>)}
-                  </select>
-                  <div className="chart-container">
-                    <canvas ref={chartCanvasRef}></canvas>
+              {/* Verbose Topic Information */}
+              <div className="verbose-topic-info" style={{ 
+                background: '#2a2a2a', 
+                border: '1px solid #444', 
+                borderRadius: '4px', 
+                padding: '12px', 
+                marginBottom: '16px',
+                fontSize: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <h4 style={{ margin: 0, color: '#fff' }}>Topic Information (Verbose)</h4>
+                  <button 
+                    onClick={() => selectedTopic && fetchTopicInfo(selectedTopic)}
+                    disabled={topicInfoLoading}
+                    style={{
+                      background: '#4ecdc4',
+                      color: '#000',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '4px 8px',
+                      fontSize: '10px',
+                      cursor: topicInfoLoading ? 'not-allowed' : 'pointer',
+                      opacity: topicInfoLoading ? 0.6 : 1
+                    }}
+                  >
+                    {topicInfoLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+                {topicInfoLoading ? (
+                  <p style={{ color: '#888', margin: 0 }}>Loading topic information...</p>
+                ) : topicInfo?.error ? (
+                  <p style={{ color: '#ff6b6b', margin: 0 }}>Error: {topicInfo.error}</p>
+                ) : topicInfo ? (
+                  <div style={{ color: '#ccc' }}>
+                    <div style={{ marginBottom: '8px' }}>
+                      <strong>Type:</strong> <span style={{ color: '#4ecdc4' }}>{topicInfo.type}</span>
+                    </div>
+                    <div style={{ marginBottom: '8px' }}>
+                      <details>
+                        <summary style={{fontWeight: 'bold', fontSize: 15, cursor: 'pointer', color: '#4ecdc4', padding: '4px 0'}}>
+                          Publishers ({topicInfo.publisherCount || topicInfo.publishers.length})
+                        </summary>
+                        <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
+                          {topicInfo.publishers.map((pub, index) => (
+                            <li key={index} style={{ color: '#4ecdc4', marginBottom: 8, background: '#23272f', borderRadius: 4, padding: 0 }}>
+                              <details>
+                                <summary style={{padding: '6px 10px', cursor: 'pointer'}}>
+                                  <strong>Node:</strong> {pub.node_name} <span style={{ color: '#ffd93d', marginLeft: 8 }}>[{pub.node_namespace}]</span>
+                                </summary>
+                                <div style={{padding: '6px 10px'}}>
+                                  <div><strong>GID:</strong> <span style={{ color: '#aaa', fontSize: 11 }}>{pub.gid}</span></div>
+                                  {pub.qos && Object.keys(pub.qos).length > 0 && (
+                                    <div style={{ marginTop: 4 }}>
+                                      <strong>QoS:</strong>
+                                      <ul style={{ margin: '2px 0 2px 16px', padding: 0, listStyle: 'circle', color: '#ffd93d', fontSize: 12 }}>
+                                        {Object.entries(pub.qos).map(([k, v]) => (
+                                          <li key={k}><strong>{k}:</strong> {v}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              </details>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    </div>
+                    <div style={{ marginBottom: '8px' }}>
+                      <details>
+                        <summary style={{fontWeight: 'bold', fontSize: 15, cursor: 'pointer', color: '#ffd93d', padding: '4px 0'}}>
+                          Subscribers ({topicInfo.subscriberCount || topicInfo.subscribers.length})
+                        </summary>
+                        <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
+                          {topicInfo.subscribers.map((sub, index) => (
+                            <li key={index} style={{ color: '#ffd93d', marginBottom: 8, background: '#23272f', borderRadius: 4, padding: 0 }}>
+                              <details>
+                                <summary style={{padding: '6px 10px', cursor: 'pointer'}}>
+                                  <strong>Node:</strong> {sub.node_name} <span style={{ color: '#4ecdc4', marginLeft: 8 }}>[{sub.node_namespace}]</span>
+                                </summary>
+                                <div style={{padding: '6px 10px'}}>
+                                  <div><strong>GID:</strong> <span style={{ color: '#aaa', fontSize: 11 }}>{sub.gid}</span></div>
+                                  {sub.qos && Object.keys(sub.qos).length > 0 && (
+                                    <div style={{ marginTop: 4 }}>
+                                      <strong>QoS:</strong>
+                                      <ul style={{ margin: '2px 0 2px 16px', padding: 0, listStyle: 'circle', color: '#6bcf7f', fontSize: 12 }}>
+                                        {Object.entries(sub.qos).map(([k, v]) => (
+                                          <li key={k}><strong>{k}:</strong> {v}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              </details>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    </div>
+                    {/* QoS global info (if any) */}
+                    {topicInfo.qos && topicInfo.qos.length > 0 && (
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong>QoS Profiles:</strong>
+                        <ul style={{ margin: '4px 0', paddingLeft: '20px', color: '#ffd93d' }}>
+                          {topicInfo.qos.map((q, i) => (
+                            <li key={i}>
+                              {Object.entries(q).map(([k, v]) => (
+                                <span key={k} style={{ marginRight: 8 }}><strong>{k}:</strong> {v}</span>
+                              ))}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {/* Extended info for debug */}
+                    {topicInfo.publishers_info && topicInfo.publishers_info.length > 0 && (
+                      <details style={{ marginBottom: '8px' }}>
+                        <summary>Raw Publishers Info</summary>
+                        <pre style={{ background: '#222', color: '#fff', padding: 8, borderRadius: 4, fontSize: 11 }}>{topicInfo.publishers_info.join('\n')}</pre>
+                      </details>
+                    )}
+                    {topicInfo.subscribers_info && topicInfo.subscribers_info.length > 0 && (
+                      <details style={{ marginBottom: '8px' }}>
+                        <summary>Raw Subscribers Info</summary>
+                        <pre style={{ background: '#222', color: '#fff', padding: 8, borderRadius: 4, fontSize: 11 }}>{topicInfo.subscribers_info.join('\n')}</pre>
+                      </details>
+                    )}
+                    {topicInfo.messageCount > 0 && (
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong>Message Count:</strong> <span style={{ color: '#ff6b6b' }}>{topicInfo.messageCount}</span>
+                      </div>
+                    )}
+                    {topicInfo.frequency > 0 && (
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong>Frequency:</strong> <span style={{ color: '#6bcf7f' }}>{topicInfo.frequency.toFixed(2)} Hz</span>
+                      </div>
+                    )}
+                    {topicInfo.note && (
+                      <div style={{ 
+                        marginTop: '8px', 
+                        padding: '6px', 
+                        background: '#3a3a3a', 
+                        borderRadius: '3px', 
+                        borderLeft: '3px solid #ffd93d',
+                        fontSize: '11px'
+                      }}>
+                        <strong>Note:</strong> {topicInfo.note}
+                      </div>
+                    )}
                   </div>
-                </>
-              ) : (
-                <p>No plottable (numeric) fields found in message type: {messageType}</p>
+                ) : (
+                  <p style={{ color: '#888', margin: 0 }}>No topic information available</p>
+                )}
+              </div>
+
+              {/* View toggle only if not in nodes mode */}
+              <div className="view-toggle">
+                <button onClick={() => setViewMode('messages')} className={viewMode === 'messages' ? 'active' : ''}>Messages</button>
+                <button onClick={() => setViewMode('chart')} className={viewMode === 'chart' ? 'active' : ''}>Chart</button>
+              </div>
+
+              {viewMode === 'messages' && (
+                <div className="messages-view">
+                  <div style={{ marginBottom: '1em' }}>
+                    <label>
+                      <input type="checkbox" checked={showHex} onChange={(e) => setShowHex(e.target.checked)} />
+                      Show HEX
+                    </label>
+                  </div>
+                  <h4>Latest Message:</h4>
+                  {latestMessage ? (
+                    <MessageRenderer data={latestMessage} showHex={showHex} />
+                  ) : (
+                    <p>Waiting for the first message...</p>
+                  )}
+                </div>
+              )}
+
+              {viewMode === 'chart' && (
+                <div className="chart-view">
+                  {numericFields.length > 0 ? (
+                    <>
+                      <select onChange={(e) => setSelectedField(e.target.value)} value={selectedField}>
+                        <option value="">-- Select a field to plot --</option>
+                        {numericFields.map(f => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                      <div className="chart-container">
+                        <canvas ref={chartCanvasRef}></canvas>
+                      </div>
+                    </>
+                  ) : (
+                    <p>No plottable (numeric) fields found in message type: {messageType}</p>
+                  )}
+                </div>
               )}
             </div>
           )}
+        </>
+      )}
 
-          {viewMode === 'nodes' && (
-            <div className="nodes-view">
-              {/* D3 graph container with fixed size and border for debug */}
-              <div id={`d3-nodes-graph-${panelId}`} style={{ width: 800, maxWidth: '100%', height: 500, margin: '24px auto', background: '#222', border: '2px solid #646cff', borderRadius: 8, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {/* D3.js node graph will appear here. */}
-              </div>
-            </div>
-          )}
+      {/* Only show nodes view if in nodes mode */}
+      {isNodesMode && (
+        <div className="nodes-view">
+          {/* Botón para llamar al servicio get_graph_info */}
+          <div style={{ marginBottom: 12 }}>
+            <button onClick={fetchGraphInfo} disabled={graphServiceLoading} style={{ background: '#4ecdc4', color: '#000', border: 'none', borderRadius: 4, padding: '4px 12px', fontSize: 13, cursor: graphServiceLoading ? 'not-allowed' : 'pointer', opacity: graphServiceLoading ? 0.6 : 1 }}>
+              {graphServiceLoading ? 'Loading graph info...' : 'Fetch Graph Info (Service)'}
+            </button>
+          </div>
+          {/* Panel para mostrar el resultado del servicio */}
+          {graphServiceError && <div style={{ color: '#ff6b6b', marginBottom: 8 }}>Error: {graphServiceError}</div>}
+          {/* D3 graph container with fixed size and border for debug */}
+          <div id={`d3-nodes-graph-${panelId}`} style={{ width: 800, maxWidth: '100%', height: 500, margin: '24px auto', background: '#222', border: '2px solid #646cff', borderRadius: 8, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {/* D.js node graph will appear here. */}
+          </div>
         </div>
       )}
     </div>

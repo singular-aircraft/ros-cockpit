@@ -94,6 +94,22 @@ function App() {
     }
   };
 
+  const addNodesPanel = () => {
+    const dockApi = dockviewApiRef.current;
+    if (dockApi && dockApi.addPanel) {
+      dockApi.addPanel({
+        id: `nodes-${panelId.current}`,
+        title: `Nodes`,
+        component: 'rosmonitor',
+        params: {
+          panelId: `nodes-${panelId.current}`,
+          viewMode: 'nodes',
+        },
+      });
+      panelId.current += 1;
+    }
+  };
+
   return (
     <div style={{ height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column' }}>
       {/* Top header */}
@@ -144,6 +160,29 @@ function App() {
           >
             +
           </button>
+          <button
+            onClick={addNodesPanel}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: '#4ecdc4',
+              color: '#000',
+              border: 'none',
+              fontSize: 18,
+              fontWeight: 'bold',
+              marginLeft: 4,
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px #0003',
+              transition: 'background 0.2s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            title="Add nodes panel"
+          >
+            Nodes
+          </button>
         </div>
       </div>
       {/* Main content: dockview */}
@@ -154,11 +193,14 @@ function App() {
             components={{
               rosmonitor: (props) => {
                 const panelId = props.id || props.params?.id || props.params?.panelId;
+                // Si el panel fue creado como 'nodes', forzar viewMode='nodes'
+                const viewMode = props.params?.viewMode || undefined;
                 return (
                   <RosMonitorWidget
                     key={props.id}
                     panelId={panelId}
                     host={host}
+                    {...(viewMode ? { viewMode } : {})}
                   />
                 );
               },
