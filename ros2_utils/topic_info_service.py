@@ -25,7 +25,6 @@ class TopicInfoService(Node):
                 capture_output=True, text=True, timeout=10
             )
             if info_result.returncode == 0:
-                self.get_logger().info(f"[DEBUG] ros2 topic info --verbose output:\n{info_result.stdout}")
                 parsed_info = self.parse_topic_info(info_result.stdout)
                 response.success = True
                 response.message = json.dumps(parsed_info)

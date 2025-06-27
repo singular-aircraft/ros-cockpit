@@ -5,6 +5,13 @@ import githubLogo from '../assets/github-mark.svg';
 import { useRef as chartRef, useEffect as chartEffect } from 'react';
 import { Chart, LineController, LineElement, PointElement, LinearScale, Title, CategoryScale } from 'chart.js';
 import * as d3 from 'd3';
+import MessageRenderer from './MessageRenderer';
+import TopicSelector from './TopicSelector';
+import LogControls from './LogControls';
+import LogView from './LogView';
+import TopicInfoPanel from './TopicInfoPanel';
+import ChartView from './ChartView';
+import NodesGraphView from './NodesGraphView';
 Chart.register(LineController, LineElement, PointElement, LinearScale, Title, CategoryScale);
 
 function toHex(val) {
@@ -31,51 +38,6 @@ function toHex(val) {
     return out + '}';
   }
   return String(val);
-}
-
-// New component to render message structure
-function MessageRenderer({ data, showHex }) {
-  if (data === null || typeof data === 'undefined') {
-    return <span style={{ color: '#888' }}>null</span>;
-  }
-
-  if (typeof data !== 'object' || data === null) {
-    return <span className="message-field-value">{showHex ? toHex(data) : String(data)}</span>;
-  }
-
-  if (Array.isArray(data)) {
-    // For large arrays, we might want to just show a summary
-    if (data.length > 10) {
-      return <span style={{ color: '#888' }}>[Array length: {data.length}]</span>;
-    }
-    return (
-      <span>
-        <span className="message-bracket">[</span>
-        {data.map((item, index) => (
-          <span key={index}>
-            <MessageRenderer data={item} showHex={showHex} />
-            {index < data.length - 1 && <span className="message-comma">, </span>}
-          </span>
-        ))}
-        <span className="message-bracket">]</span>
-      </span>
-    );
-  }
-
-  return (
-    <span className="message-content">
-      <span className="message-brace">{'{'}</span>
-      {Object.entries(data).map(([key, value], index) => (
-        <span key={key}>
-          <span className="message-field-key">{key}</span>
-          <span className="message-field-separator">: </span>
-          <MessageRenderer data={value} showHex={showHex} />
-          {index < Object.keys(data).length - 1 && <span className="message-comma">, </span>}
-        </span>
-      ))}
-      <span className="message-brace">{'}'}</span>
-    </span>
-  );
 }
 
 function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
@@ -118,13 +80,6 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   const messagesEndRef = useRef(null);
   const logContainerRef = useRef(null);
 
-  // Añadir referencias para D3
-  const d3SimRef = useRef(null);
-  const d3NodesRef = useRef([]);
-  const d3LinksRef = useRef([]);
-  const d3SvgRef = useRef(null);
-  const d3GRef = useRef(null);
-
   // Función para hacer scroll automático al final del log
   const scrollToBottom = () => {
     if (autoScroll && logContainerRef.current) {
@@ -141,14 +96,11 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
 
   // Al montar, lee el topic guardado
   useEffect(() => {
-    console.log('useEffect called with:', panelId);
     if (!panelId) {
-      console.warn('panelId is undefined, cannot load saved topic');
       return;
     }
     const key = `rosmonitor_panel_topic_${panelId}`;
     const saved = localStorage.getItem(key);
-    console.log(`panelId: ${panelId}, saved: ${saved}`);
     if (saved) {
       setSelectedTopic(saved);
     }
@@ -207,17 +159,14 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
             rawInfo: parsedInfo
           });
         } catch (error) {
-          console.error('Error parsing topic info:', error);
           setTopicInfo({ error: 'Error parsing topic information' });
         }
       } else {
-        console.warn('Service call failed, falling back to basic info');
         // Fallback to basic info
         fetchBasicTopicInfo(topicName, ros);
       }
       setTopicInfoLoading(false);
     }, (error) => {
-      console.warn('Service not available, falling back to basic info:', error);
       // Fallback to basic info
       fetchBasicTopicInfo(topicName, ros);
     });
@@ -243,10 +192,6 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
       };
       
       setTopicInfo(topicInfo);
-      setTopicInfoLoading(false);
-    }, (error) => {
-      console.error('Error getting topic type:', error);
-      setTopicInfo({ error: 'Could not get topic type' });
       setTopicInfoLoading(false);
     });
   };
@@ -313,14 +258,11 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
           timestampsRef.current = [now, ...timestampsRef.current].slice(0, 10);
         });
         setListener(newListener);
-      }, (err) => {
-        console.error('Error getting topic type:', err);
       });
     }
     return () => {
       if (listener) listener.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTopic, host, maxMessages]);
 
   // Filter topics by the filter string
@@ -356,7 +298,6 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
         type,
       });
       service.callService(request, (result) => {
-        console.log('rosapi message_details result:', result); // <-- log para depuración
         // result.typedefs es un array de definiciones
         // Buscar campos numéricos recursivamente
         const typedefs = result.typedefs || [];
@@ -413,7 +354,6 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
         }
       });
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTopic, host, viewMode, panelId]);
 
   // Chart rendering effect
@@ -612,276 +552,6 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
   const nodeList = allNodes.filter(n => connectedIds.has(n.id));
 
-  // Llama automáticamente al servicio al entrar en la vista 'nodes'
-  useEffect(() => {
-    if (viewMode !== 'nodes') return;
-    fetchGraphInfo();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, host]);
-
-  // Reemplaza el efecto D3.js para el grafo de nodos para usar graphServiceData
-  useEffect(() => {
-    if (viewMode !== 'nodes' || !graphServiceData) return;
-    const containerId = `d3-nodes-graph-${panelId}`;
-    const container = document.getElementById(containerId);
-    if (!container) return;
-
-    // Build nodes and links from graphServiceData
-    let allNodes = [];
-    let links = [];
-    const TOPIC_FILTER = ['/rosout', '/parameter_events'];
-    const isFiltered = name => TOPIC_FILTER.includes(name);
-    allNodes = [
-      ...(graphServiceData.nodes || []).map(n => ({ id: n.name, type: 'node' })),
-      ...(graphServiceData.topics || []).filter(t => !isFiltered(t.name)).map(t => ({ id: t.name, type: 'topic' })),
-      ...(graphServiceData.services || []).filter(s => !isFiltered(s.name)).map(s => ({ id: s.name, type: 'service' })),
-    ];
-    (graphServiceData.publishers || []).forEach(pub => {
-      if (!isFiltered(pub.topic))
-        links.push({ source: pub.node, target: pub.topic, type: 'publish' });
-    });
-    (graphServiceData.subscribers || []).forEach(sub => {
-      if (!isFiltered(sub.topic))
-        links.push({ source: sub.topic, target: sub.node, type: 'subscribe' });
-    });
-    if (graphServiceData.service_providers) {
-      graphServiceData.service_providers.forEach(sp => {
-        if (!isFiltered(sp.service))
-          links.push({ source: sp.node, target: sp.service, type: 'service' });
-      });
-    }
-    // Identificar nodos huérfanos
-    const connectedIds = new Set();
-    links.forEach(l => { connectedIds.add(l.source); connectedIds.add(l.target); });
-    const nodeList = allNodes;
-    const width = container.offsetWidth || 600;
-    const height = container.offsetHeight || 400;
-
-    // --- SVG y G persistentes ---
-    let svg = d3SvgRef.current;
-    let g = d3GRef.current;
-    if (!svg) {
-      svg = d3.select(container)
-        .append('svg')
-        .attr('width', width)
-        .attr('height', height)
-        .style('background', '#222');
-      d3SvgRef.current = svg;
-      g = svg.append('g');
-      d3GRef.current = g;
-      svg.call(d3.zoom()
-        .scaleExtent([0.1, 2])
-        .on('zoom', (event) => {
-          g.attr('transform', event.transform);
-        })
-      );
-    }
-
-    // --- Mantener posiciones previas ---
-    const prevNodes = d3NodesRef.current;
-    const prevNodeMap = Object.fromEntries(prevNodes.map(n => [n.id, n]));
-    nodeList.forEach(n => {
-      const prev = prevNodeMap[n.id];
-      if (prev) {
-        n.x = prev.x;
-        n.y = prev.y;
-        n.vx = prev.vx;
-        n.vy = prev.vy;
-        n.fx = prev.fx;
-        n.fy = prev.fy;
-      }
-    });
-    d3NodesRef.current = nodeList;
-    d3LinksRef.current = links;
-
-    // --- Definir marcador de flecha ---
-    if (svg.select('defs').empty()) {
-      const defs = svg.append('defs');
-      defs.append('marker')
-        .attr('id', 'arrowhead')
-        .attr('viewBox', '0 -5 10 10')
-        .attr('refX', 18)
-        .attr('refY', 0)
-        .attr('markerWidth', 8)
-        .attr('markerHeight', 8)
-        .attr('orient', 'auto')
-        .attr('markerUnits', 'strokeWidth')
-        .append('path')
-        .attr('d', 'M0,-5L10,0L0,5')
-        .attr('fill', '#ffd93d');
-    }
-    // --- Data join para links ---
-    links = links.map(l => ({
-      ...l,
-      source: typeof l.source === 'object' ? l.source.id : l.source,
-      target: typeof l.target === 'object' ? l.target.id : l.target
-    }));
-    const linkSel = g.selectAll('line').data(links, d => d.source + '-' + d.target + '-' + d.type);
-    linkSel.exit().remove();
-    linkSel.enter()
-      .append('line')
-      .attr('stroke', '#ffd93d')
-      .attr('stroke-width', 10)
-      .attr('stroke-dasharray', d => d.type === 'service' ? '4,2' : '')
-      .attr('marker-end', 'url(#arrowhead)');
-    // --- Data join para nodos ---
-    const nodeSel = g.selectAll('circle').data(nodeList, d => d.id);
-    nodeSel.exit().remove();
-    nodeSel.enter()
-      .append('circle')
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 2)
-      .attr('r', d => d.type === 'node' ? 44 : d.type === 'topic' ? 32 : 24)
-      .attr('fill', d => d.type === 'node' ? '#2ecc40' : d.type === 'topic' ? '#43e' : '#fa0')
-      .call(d3.drag()
-        .on('start', dragstarted)
-        .on('drag', dragged)
-        .on('end', dragended));
-    // --- Data join para labels ---
-    const labelSel = g.selectAll('text').data(nodeList, d => d.id);
-    labelSel.exit().remove();
-    labelSel.enter()
-      .append('text')
-      .attr('fill', '#fff')
-      .attr('font-size', 14)
-      .attr('text-anchor', 'middle')
-      .attr('dy', 5)
-      .text(d => d.id);
-    // --- Simulación de fuerzas ---
-    if (!d3SimRef.current) {
-      d3SimRef.current = d3.forceSimulation(nodeList)
-        .force('link', d3.forceLink(links).id(d => d.id).distance(120))
-        .force('charge', d3.forceManyBody().strength(-400))
-        .force('center', d3.forceCenter(width / 2, height / 2))
-        .on('tick', ticked);
-    } else {
-      d3SimRef.current.nodes(nodeList);
-      d3SimRef.current.force('link').links(links);
-      d3SimRef.current.alpha(1).restart();
-    }
-    function ticked() {
-      // Repulsión extra entre topics
-      const topicNodes = d3NodesRef.current.filter(n => n.type === 'topic');
-      const repelStrength = 0.35; // Más rápido
-      for (let i = 0; i < topicNodes.length; i++) {
-        for (let j = i + 1; j < topicNodes.length; j++) {
-          const a = topicNodes[i];
-          const b = topicNodes[j];
-          let dx = a.x - b.x;
-          let dy = a.y - b.y;
-          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          if (dist < 200) { // Solo si están cerca
-            let force = repelStrength / dist;
-            a.vx += force * dx;
-            a.vy += force * dy;
-            b.vx -= force * dx;
-            b.vy -= force * dy;
-          }
-        }
-      }
-      // Log de posiciones de nodos
-      console.log('[DEBUG][D3] Posiciones de nodos:', d3NodesRef.current.map(n => ({ id: n.id, x: n.x, y: n.y })));
-      // Log de posiciones de links
-      links.forEach(l => {
-        const n1 = typeof l.source === 'object' ? l.source : d3NodesRef.current.find(n => n.id === l.source);
-        const n2 = typeof l.target === 'object' ? l.target : d3NodesRef.current.find(n => n.id === l.target);
-        console.log(`[DEBUG][D3] Link ${n1?.id} -> ${n2?.id}: x1=${n1?.x}, y1=${n1?.y}, x2=${n2?.x}, y2=${n2?.y}`);
-      });
-      g.selectAll('line')
-        .attr('x1', d => (typeof d.source === 'object' ? d.source.x : d3NodesRef.current.find(n => n.id === d.source)?.x))
-        .attr('y1', d => (typeof d.source === 'object' ? d.source.y : d3NodesRef.current.find(n => n.id === d.source)?.y))
-        .attr('x2', d => (typeof d.target === 'object' ? d.target.x : d3NodesRef.current.find(n => n.id === d.target)?.x))
-        .attr('y2', d => (typeof d.target === 'object' ? d.target.y : d3NodesRef.current.find(n => n.id === d.target)?.y));
-      g.selectAll('circle')
-        .attr('cx', d => d.x)
-        .attr('cy', d => d.y);
-      g.selectAll('text')
-        .attr('x', d => d.x)
-        .attr('y', d => d.y);
-    }
-    function dragstarted(event, d) {
-      if (!event.active && d3SimRef.current) d3SimRef.current.alphaTarget(0.3).restart();
-      d.fx = d.x;
-      d.fy = d.y;
-    }
-    function dragged(event, d) {
-      d.fx = event.x;
-      d.fy = event.y;
-    }
-    function dragended(event, d) {
-      if (!event.active && d3SimRef.current) d3SimRef.current.alphaTarget(0);
-      d.fx = null;
-      d.fy = null;
-    }
-    // Cleanup on unmount
-    return () => {
-      if (d3SimRef.current) d3SimRef.current.stop();
-      d3SimRef.current = null;
-      if (svg) svg.remove();
-      d3SvgRef.current = null;
-      d3GRef.current = null;
-    };
-  }, [viewMode, graphServiceData, panelId]);
-
-  // Función para llamar al servicio get_graph_info
-  const fetchGraphInfo = () => {
-    setGraphServiceLoading(true);
-    setGraphServiceError(null);
-    setGraphServiceData(null);
-    const ros = rosInit(host);
-    const graphService = new ROSLIB.Service({
-      ros: ros,
-      name: '/get_graph_info',
-      serviceType: 'ros2_monitor_srvs/GetGraphInfo'
-    });
-    const request = new ROSLIB.ServiceRequest({});
-    graphService.callService(request, (result) => {
-      try {
-        const data = JSON.parse(result.graph_json);
-        setGraphServiceData(data);
-        console.log('[DEBUG] Respuesta completa de get_graph_info:', result);
-        if (result && result.graph_json) {
-          try {
-            const graph = typeof result.graph_json === 'string' ? JSON.parse(result.graph_json) : result.graph_json;
-            console.log('[DEBUG] graph.topics:', graph.topics);
-            console.log('[DEBUG] graph.nodes:', graph.nodes);
-            console.log('[DEBUG] graph.publishers:', graph.publishers);
-            console.log('[DEBUG] graph.subscribers:', graph.subscribers);
-            // Construye el array de nodos para D3
-            const nodes = [
-              ...(graph.nodes ? graph.nodes.map(n => ({ id: n.name, ...n })) : []),
-              ...(graph.topics ? graph.topics.map(t => ({ id: t.name, ...t })) : [])
-            ];
-            console.log('[DEBUG] nodos para D3:', nodes);
-            // Construye los links
-            const links = [
-              ...(graph.publishers ? graph.publishers.map(pub => ({ source: pub.node, target: pub.topic, type: 'pub' })) : []),
-              ...(graph.subscribers ? graph.subscribers.map(sub => ({ source: sub.node, target: sub.topic, type: 'sub' })) : [])
-            ];
-            // Chequea que todos los source/target existen en nodos
-            const nodeIds = new Set(nodes.map(n => n.id));
-            const missingSources = links.filter(l => !nodeIds.has(l.source));
-            const missingTargets = links.filter(l => !nodeIds.has(l.target));
-            if (missingSources.length > 0) {
-              console.warn('[DEBUG] Links con source que NO existe en nodos:', missingSources);
-            }
-            if (missingTargets.length > 0) {
-              console.warn('[DEBUG] Links con target que NO existe en nodos:', missingTargets);
-            }
-          } catch (e) {
-            console.error('[DEBUG] Error parseando graph_json:', e);
-          }
-        }
-      } catch (e) {
-        setGraphServiceError('Error parsing graph_json: ' + e);
-      }
-      setGraphServiceLoading(false);
-    }, (err) => {
-      setGraphServiceError('Service call failed: ' + (err?.toString() || 'unknown error'));
-      setGraphServiceLoading(false);
-    });
-  };
-
   // Efecto para cerrar el desplegable cuando se hace clic fuera
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -1020,6 +690,39 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
     }
   };
 
+  const fetchGraphInfo = () => {
+    setGraphServiceLoading(true);
+    setGraphServiceError(null);
+    setGraphServiceData(null);
+    const ros = rosInit(host);
+    const graphService = new ROSLIB.Service({
+      ros: ros,
+      name: '/get_graph_info',
+      serviceType: 'ros2_monitor_srvs/GetGraphInfo'
+    });
+    const request = new ROSLIB.ServiceRequest({});
+    console.log('Llamando a /get_graph_info...');
+    graphService.callService(request, (result) => {
+      try {
+        console.log('Respuesta de /get_graph_info:', result);
+        const data = JSON.parse(result.graph_json);
+        setGraphServiceData(data);
+        console.log('setGraphServiceData ejecutado con:', data);
+      } catch (e) {
+        setGraphServiceError('Error parsing graph_json: ' + e);
+      }
+      setGraphServiceLoading(false);
+    }, (err) => {
+      setGraphServiceError('Service call failed: ' + (err?.toString() || 'unknown error'));
+      setGraphServiceLoading(false);
+    });
+  };
+
+  useEffect(() => {
+    if (viewMode !== 'nodes' || !isConnected) return;
+    fetchGraphInfo();
+  }, [viewMode, host, isConnected]);
+
   return (
     <div className="ros-monitor-widget">
       <div className="widget-header">
@@ -1034,423 +737,64 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
       {/* Only show topic selection and info if not in nodes mode */}
       {!isNodesMode && (
         <>
-          <div className="topic-selection">
-            <input
-              type="text"
-              placeholder="Filter topics..."
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              style={{ marginBottom: '0.5em', width: 'calc(100% - 12px)' }}
-            />
-            {loading ? (
-              <p>Loading topics...</p>
-            ) : (
-              <select
-                onChange={e => handleTopicChange(e.target.value)}
-                value={selectedTopic}
-                size={5}
-              >
-                <option value="">-- Select a topic --</option>
-                {filteredTopics.map((topic) => (
-                  <option key={topic} value={topic}>
-                    {topic}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
+          <TopicSelector
+            topics={topics}
+            filter={filter}
+            setFilter={setFilter}
+            selectedTopic={selectedTopic}
+            handleTopicChange={handleTopicChange}
+            loading={loading}
+            filteredTopics={filteredTopics}
+          />
           {selectedTopic && (
             <div className="topic-info">
               <h3>
                 Topic: {selectedTopic}
               </h3>
-
-              {/* Verbose Topic Information */}
-              <div className="verbose-topic-info" style={{ 
-                background: '#2a2a2a', 
-                border: '1px solid #444', 
-                borderRadius: '4px', 
-                padding: '12px', 
-                marginBottom: '16px',
-                fontSize: '12px'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <h4 style={{ margin: 0, color: '#fff' }}>Topic Information (Verbose)</h4>
-                  <button 
-                    onClick={() => selectedTopic && fetchTopicInfo(selectedTopic)}
-                    disabled={topicInfoLoading}
-                    style={{
-                      background: '#4ecdc4',
-                      color: '#000',
-                      border: 'none',
-                      borderRadius: '4px',
-                      padding: '4px 8px',
-                      fontSize: '10px',
-                      cursor: topicInfoLoading ? 'not-allowed' : 'pointer',
-                      opacity: topicInfoLoading ? 0.6 : 1
-                    }}
-                  >
-                    {topicInfoLoading ? 'Loading...' : 'Refresh'}
-                  </button>
-                </div>
-                {topicInfoLoading ? (
-                  <p style={{ color: '#888', margin: 0 }}>Loading topic information...</p>
-                ) : topicInfo?.error ? (
-                  <p style={{ color: '#ff6b6b', margin: 0 }}>Error: {topicInfo.error}</p>
-                ) : topicInfo ? (
-                  <div style={{ color: '#ccc' }}>
-                    <div style={{ marginBottom: '8px' }}>
-                      <strong>Type:</strong> <span style={{ color: '#4ecdc4' }}>{topicInfo.type}</span>
-                    </div>
-                    <div style={{ marginBottom: '8px' }}>
-                      <details>
-                        <summary style={{fontWeight: 'bold', fontSize: 15, cursor: 'pointer', color: '#4ecdc4', padding: '4px 0'}}>
-                          Publishers ({topicInfo.publisherCount || topicInfo.publishers.length})
-                        </summary>
-                        <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
-                          {topicInfo.publishers.map((pub, index) => (
-                            <li key={index} style={{ color: '#4ecdc4', marginBottom: 8, background: '#23272f', borderRadius: 4, padding: 0 }}>
-                              <details>
-                                <summary style={{padding: '6px 10px', cursor: 'pointer'}}>
-                                  <strong>Node:</strong> {pub.node_name} <span style={{ color: '#ffd93d', marginLeft: 8 }}>[{pub.node_namespace}]</span>
-                                </summary>
-                                <div style={{padding: '6px 10px'}}>
-                                  <div><strong>GID:</strong> <span style={{ color: '#aaa', fontSize: 11 }}>{pub.gid}</span></div>
-                                  {pub.qos && Object.keys(pub.qos).length > 0 && (
-                                    <div style={{ marginTop: 4 }}>
-                                      <strong>QoS:</strong>
-                                      <ul style={{ margin: '2px 0 2px 16px', padding: 0, listStyle: 'circle', color: '#ffd93d', fontSize: 12 }}>
-                                        {Object.entries(pub.qos).map(([k, v]) => (
-                                          <li key={k}><strong>{k}:</strong> {v}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </div>
-                              </details>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    </div>
-                    <div style={{ marginBottom: '8px' }}>
-                      <details>
-                        <summary style={{fontWeight: 'bold', fontSize: 15, cursor: 'pointer', color: '#ffd93d', padding: '4px 0'}}>
-                          Subscribers ({topicInfo.subscriberCount || topicInfo.subscribers.length})
-                        </summary>
-                        <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
-                          {topicInfo.subscribers.map((sub, index) => (
-                            <li key={index} style={{ color: '#ffd93d', marginBottom: 8, background: '#23272f', borderRadius: 4, padding: 0 }}>
-                              <details>
-                                <summary style={{padding: '6px 10px', cursor: 'pointer'}}>
-                                  <strong>Node:</strong> {sub.node_name} <span style={{ color: '#4ecdc4', marginLeft: 8 }}>[{sub.node_namespace}]</span>
-                                </summary>
-                                <div style={{padding: '6px 10px'}}>
-                                  <div><strong>GID:</strong> <span style={{ color: '#aaa', fontSize: 11 }}>{sub.gid}</span></div>
-                                  {sub.qos && Object.keys(sub.qos).length > 0 && (
-                                    <div style={{ marginTop: 4 }}>
-                                      <strong>QoS:</strong>
-                                      <ul style={{ margin: '2px 0 2px 16px', padding: 0, listStyle: 'circle', color: '#6bcf7f', fontSize: 12 }}>
-                                        {Object.entries(sub.qos).map(([k, v]) => (
-                                          <li key={k}><strong>{k}:</strong> {v}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </div>
-                              </details>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    </div>
-                    {/* QoS global info (if any) */}
-                    {topicInfo.qos && topicInfo.qos.length > 0 && (
-                      <div style={{ marginBottom: '8px' }}>
-                        <strong>QoS Profiles:</strong>
-                        <ul style={{ margin: '4px 0', paddingLeft: '20px', color: '#ffd93d' }}>
-                          {topicInfo.qos.map((q, i) => (
-                            <li key={i}>
-                              {Object.entries(q).map(([k, v]) => (
-                                <span key={k} style={{ marginRight: 8 }}><strong>{k}:</strong> {v}</span>
-                              ))}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {/* Extended info for debug */}
-                    {topicInfo.publishers_info && topicInfo.publishers_info.length > 0 && (
-                      <details style={{ marginBottom: '8px' }}>
-                        <summary>Raw Publishers Info</summary>
-                        <pre style={{ background: '#222', color: '#fff', padding: 8, borderRadius: 4, fontSize: 11 }}>{topicInfo.publishers_info.join('\n')}</pre>
-                      </details>
-                    )}
-                    {topicInfo.subscribers_info && topicInfo.subscribers_info.length > 0 && (
-                      <details style={{ marginBottom: '8px' }}>
-                        <summary>Raw Subscribers Info</summary>
-                        <pre style={{ background: '#222', color: '#fff', padding: 8, borderRadius: 4, fontSize: 11 }}>{topicInfo.subscribers_info.join('\n')}</pre>
-                      </details>
-                    )}
-                    {topicInfo.messageCount > 0 && (
-                      <div style={{ marginBottom: '8px' }}>
-                        <strong>Message Count:</strong> <span style={{ color: '#ff6b6b' }}>{topicInfo.messageCount}</span>
-                      </div>
-                    )}
-                    {topicInfo.frequency > 0 && (
-                      <div style={{ marginBottom: '8px' }}>
-                        <strong>Frequency:</strong> <span style={{ color: '#6bcf7f' }}>{topicInfo.frequency.toFixed(2)} Hz</span>
-                      </div>
-                    )}
-                    {topicInfo.note && (
-                      <div style={{ 
-                        marginTop: '8px', 
-                        padding: '6px', 
-                        background: '#3a3a3a', 
-                        borderRadius: '3px', 
-                        borderLeft: '3px solid #ffd93d',
-                        fontSize: '11px'
-                      }}>
-                        <strong>Note:</strong> {topicInfo.note}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <p style={{ color: '#888', margin: 0 }}>No topic information available</p>
-                )}
-              </div>
-
-              {/* View toggle only if not in nodes mode */}
-              <div className="view-toggle">
-                <button onClick={() => setViewMode('messages')} className={viewMode === 'messages' ? 'active' : ''}>Messages</button>
-                <button onClick={() => setViewMode('chart')} className={viewMode === 'chart' ? 'active' : ''}>Chart</button>
-              </div>
-
-              {viewMode === 'messages' && (
-                <div className="messages-view">
-                  <div className="controls-container">
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-                      <label className="control-item">
-                        <input type="checkbox" checked={showHex} onChange={(e) => setShowHex(e.target.checked)} />
-                        Show HEX
-                      </label>
-                      <label className="control-item">
-                        <input type="checkbox" checked={showTimestamps} onChange={(e) => setShowTimestamps(e.target.checked)} />
-                        Show Timestamps
-                      </label>
-                      <label className="control-item">
-                        <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
-                        Auto-scroll
-                      </label>
-                      <label className="control-item">
-                        <input type="checkbox" checked={wrapLines} onChange={(e) => setWrapLines(e.target.checked)} />
-                        Wrap Lines
-                      </label>
-                      <div className="control-item">
-                        <label>Max messages:</label>
-                        <input 
-                          type="number" 
-                          value={maxMessages} 
-                          onChange={(e) => setMaxMessages(Math.max(1, parseInt(e.target.value) || 100))}
-                          min="1"
-                          max="1000"
-                          style={{ width: '60px', padding: '2px 4px' }}
-                        />
-                      </div>
-                      <button 
-                        onClick={() => setMessages([])}
-                        className="clear-button"
-                      >
-                        Clear Log
-                      </button>
-                      {availableFields.length > 0 && (
-                        <div className="control-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', position: 'relative' }}>
-                          <label style={{ fontSize: '11px', color: '#ccc' }}>Fields to show:</label>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setFieldsDropdownOpen(!fieldsDropdownOpen);
-                            }}
-                            style={{
-                              background: '#2a2a2a',
-                              color: '#fff',
-                              border: '1px solid #444',
-                              borderRadius: '4px',
-                              padding: '4px 8px',
-                              fontSize: '11px',
-                              cursor: 'pointer',
-                              minWidth: '150px',
-                              textAlign: 'left',
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center'
-                            }}
-                          >
-                            <span>{selectedFields.length} of {availableFields.length} fields</span>
-                            <span style={{ fontSize: '10px' }}>▼</span>
-                          </button>
-                          
-                          {fieldsDropdownOpen && (
-                            <div 
-                              className="fields-dropdown" 
-                              onClick={(e) => e.stopPropagation()}
-                              style={{
-                                position: 'absolute',
-                                top: '100%',
-                                left: 0,
-                                background: '#1a1a1a',
-                                border: '1px solid #444',
-                                borderRadius: '4px',
-                                padding: '8px',
-                                maxHeight: '200px',
-                                overflowY: 'auto',
-                                zIndex: 1000,
-                                minWidth: '200px',
-                                boxShadow: '0 4px 8px rgba(0,0,0,0.5)'
-                              }}
-                            >
-                              <div className="field-buttons" style={{ marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '8px' }}>
-                                <button 
-                                  onClick={() => setSelectedFields(availableFields)}
-                                  className="field-button field-button-all"
-                                >
-                                  Select All
-                                </button>
-                                <button 
-                                  onClick={() => setSelectedFields([])}
-                                  className="field-button field-button-none"
-                                >
-                                  Select None
-                                </button>
-                              </div>
-                              
-                              {availableFields.map(field => (
-                                <label key={field} style={{ 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
-                                  gap: '6px', 
-                                  padding: '2px 0',
-                                  fontSize: '11px',
-                                  cursor: 'pointer',
-                                  color: '#fff'
-                                }}>
-                                  <input 
-                                    type="checkbox"
-                                    checked={selectedFields.includes(field)}
-                                    onChange={(e) => {
-                                      if (e.target.checked) {
-                                        setSelectedFields([...selectedFields, field]);
-                                      } else {
-                                        setSelectedFields(selectedFields.filter(f => f !== field));
-                                      }
-                                    }}
-                                    style={{ margin: 0 }}
-                                  />
-                                  <span style={{ 
-                                    color: selectedFields.includes(field) ? '#4ecdc4' : '#ccc',
-                                    fontWeight: selectedFields.includes(field) ? 'bold' : 'normal'
-                                  }}>
-                                    {field}
-                                  </span>
-                                </label>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  
-                  <div className="messages-log-container" ref={logContainerRef} style={{ 
-                    background: '#1a1a1a', 
-                    border: '1px solid #444', 
-                    borderRadius: '4px', 
-                    padding: '8px',
-                    maxHeight: '400px',
-                    overflowY: 'auto',
-                    fontFamily: 'monospace',
-                    fontSize: '12px'
-                  }}>
-                    {messages.length === 0 ? (
-                      <p style={{ color: '#888', textAlign: 'center', margin: '20px 0' }}>
-                        Waiting for messages...
-                      </p>
-                    ) : (
-                      <div>
-                        {messages.map((msg, index) => (
-                          <div 
-                            key={msg.id} 
-                            className="message-entry"
-                            style={{ 
-                              wordBreak: wrapLines ? 'break-word' : 'normal'
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                              {showTimestamps && (
-                                <span className="timestamp" style={{ 
-                                  color: '#4ecdc4', 
-                                  fontSize: '11px',
-                                  fontFamily: 'monospace',
-                                  whiteSpace: 'nowrap',
-                                  flexShrink: 0
-                                }}>
-                                  [{msg.timestamp.toLocaleTimeString()}]
-                                </span>
-                              )}
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div 
-                                  className={wrapLines ? '' : 'message-no-wrap'}
-                                  style={{ 
-                                    whiteSpace: wrapLines ? 'pre-wrap' : 'nowrap',
-                                    overflow: wrapLines ? 'visible' : 'hidden',
-                                    textOverflow: wrapLines ? 'clip' : 'ellipsis'
-                                  }}
-                                  title={wrapLines ? '' : 'Hover to see full message'}
-                                >
-                                  <MessageRenderer 
-                                    data={selectedFields.length > 0 ? filterMessageByFields(msg.data, selectedFields) : msg.data} 
-                                    showHex={showHex} 
-                                  />
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                        <div ref={messagesEndRef} />
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div style={{ 
-                    marginTop: '8px', 
-                    fontSize: '11px', 
-                    color: '#888',
-                    display: 'flex',
-                    justifyContent: 'space-between'
-                  }}>
-                    <span>Total messages: {messages.length}</span>
-                    <span>Frequency: {hz.toFixed(2)} Hz</span>
-                  </div>
-                </div>
-              )}
-
+              <TopicInfoPanel
+                topicInfo={topicInfo}
+                topicInfoLoading={topicInfoLoading}
+                fetchTopicInfo={fetchTopicInfo}
+                selectedTopic={selectedTopic}
+              />
+              <LogControls
+                showHex={showHex}
+                setShowHex={setShowHex}
+                showTimestamps={showTimestamps}
+                setShowTimestamps={setShowTimestamps}
+                autoScroll={autoScroll}
+                setAutoScroll={setAutoScroll}
+                wrapLines={wrapLines}
+                setWrapLines={setWrapLines}
+                maxMessages={maxMessages}
+                setMaxMessages={setMaxMessages}
+                onClear={() => setMessages([])}
+                availableFields={availableFields}
+                selectedFields={selectedFields}
+                setSelectedFields={setSelectedFields}
+                fieldsDropdownOpen={fieldsDropdownOpen}
+                setFieldsDropdownOpen={setFieldsDropdownOpen}
+              />
+              <LogView
+                messages={messages}
+                showTimestamps={showTimestamps}
+                showHex={showHex}
+                wrapLines={wrapLines}
+                messagesEndRef={messagesEndRef}
+                selectedFields={selectedFields}
+                filterMessageByFields={filterMessageByFields}
+              />
               {viewMode === 'chart' && (
-                <div className="chart-view">
-                  {numericFields.length > 0 ? (
-                    <>
-                      <select onChange={(e) => setSelectedField(e.target.value)} value={selectedField}>
-                        <option value="">-- Select a field to plot --</option>
-                        {numericFields.map(f => <option key={f} value={f}>{f}</option>)}
-                      </select>
-                      <div className="chart-container">
-                        <canvas ref={chartCanvasRef}></canvas>
-                      </div>
-                    </>
-                  ) : (
-                    <p>No plottable (numeric) fields found in message type: {messageType}</p>
-                  )}
-                </div>
+                <ChartView
+                  messages={messages}
+                  numericFields={numericFields}
+                  selectedField={selectedField}
+                  setSelectedField={setSelectedField}
+                  chartCanvasRef={chartCanvasRef}
+                  selectedTopic={selectedTopic}
+                  messageType={messageType}
+                  chartInstanceRef={chartInstanceRef}
+                />
               )}
             </div>
           )}
@@ -1459,20 +803,12 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
 
       {/* Only show nodes view if in nodes mode */}
       {isNodesMode && (
-        <div className="nodes-view">
-          {/* Botón para llamar al servicio get_graph_info */}
-          <div style={{ marginBottom: 12 }}>
-            <button onClick={fetchGraphInfo} disabled={graphServiceLoading} style={{ background: '#4ecdc4', color: '#000', border: 'none', borderRadius: 4, padding: '4px 12px', fontSize: 13, cursor: graphServiceLoading ? 'not-allowed' : 'pointer', opacity: graphServiceLoading ? 0.6 : 1 }}>
-              {graphServiceLoading ? 'Loading graph info...' : 'Fetch Graph Info (Service)'}
-            </button>
-          </div>
-          {/* Panel para mostrar el resultado del servicio */}
-          {graphServiceError && <div style={{ color: '#ff6b6b', marginBottom: 8 }}>Error: {graphServiceError}</div>}
-          {/* D3 graph container with fixed size and border for debug */}
-          <div id={`d3-nodes-graph-${panelId}`} style={{ width: 800, maxWidth: '100%', height: 500, margin: '24px auto', background: '#222', border: '2px solid #646cff', borderRadius: 8, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {/* D.js node graph will appear here. */}
-          </div>
-        </div>
+        <NodesGraphView
+          panelId={panelId}
+          graphServiceData={graphServiceData}
+          graphServiceLoading={graphServiceLoading}
+          graphServiceError={graphServiceError}
+        />
       )}
     </div>
   );

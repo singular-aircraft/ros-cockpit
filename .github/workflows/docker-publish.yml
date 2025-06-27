@@ -3,9 +3,6 @@ name: Build and Push Docker image to Docker Hub
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'docker/Dockerfile'
-      - '.github/workflows/docker-publish.yml'
   workflow_dispatch:
 
 jobs:
