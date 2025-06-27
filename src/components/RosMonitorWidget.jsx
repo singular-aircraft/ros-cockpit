@@ -694,8 +694,23 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
     d3NodesRef.current = nodeList;
     d3LinksRef.current = links;
 
+    // --- Definir marcador de flecha ---
+    if (svg.select('defs').empty()) {
+      const defs = svg.append('defs');
+      defs.append('marker')
+        .attr('id', 'arrowhead')
+        .attr('viewBox', '0 -5 10 10')
+        .attr('refX', 18)
+        .attr('refY', 0)
+        .attr('markerWidth', 8)
+        .attr('markerHeight', 8)
+        .attr('orient', 'auto')
+        .attr('markerUnits', 'strokeWidth')
+        .append('path')
+        .attr('d', 'M0,-5L10,0L0,5')
+        .attr('fill', '#ffd93d');
+    }
     // --- Data join para links ---
-    // Asegura que source y target sean siempre ids (string)
     links = links.map(l => ({
       ...l,
       source: typeof l.source === 'object' ? l.source.id : l.source,
@@ -707,7 +722,8 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
       .append('line')
       .attr('stroke', '#ffd93d')
       .attr('stroke-width', 10)
-      .attr('stroke-dasharray', d => d.type === 'service' ? '4,2' : '');
+      .attr('stroke-dasharray', d => d.type === 'service' ? '4,2' : '')
+      .attr('marker-end', 'url(#arrowhead)');
     // --- Data join para nodos ---
     const nodeSel = g.selectAll('circle').data(nodeList, d => d.id);
     nodeSel.exit().remove();
@@ -744,6 +760,25 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
       d3SimRef.current.alpha(1).restart();
     }
     function ticked() {
+      // Repulsión extra entre topics
+      const topicNodes = d3NodesRef.current.filter(n => n.type === 'topic');
+      const repelStrength = 0.35; // Más rápido
+      for (let i = 0; i < topicNodes.length; i++) {
+        for (let j = i + 1; j < topicNodes.length; j++) {
+          const a = topicNodes[i];
+          const b = topicNodes[j];
+          let dx = a.x - b.x;
+          let dy = a.y - b.y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          if (dist < 200) { // Solo si están cerca
+            let force = repelStrength / dist;
+            a.vx += force * dx;
+            a.vy += force * dy;
+            b.vx -= force * dx;
+            b.vy -= force * dy;
+          }
+        }
+      }
       // Log de posiciones de nodos
       console.log('[DEBUG][D3] Posiciones de nodos:', d3NodesRef.current.map(n => ({ id: n.id, x: n.x, y: n.y })));
       // Log de posiciones de links
