@@ -40,3 +40,213 @@
 .read-the-docs {
   color: #888;
 }
+
+/* Estilos para el log de mensajes */
+.messages-log-container {
+  scrollbar-width: thin;
+  scrollbar-color: #4ecdc4 #1a1a1a;
+}
+
+.messages-log-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.messages-log-container::-webkit-scrollbar-track {
+  background: #1a1a1a;
+  border-radius: 4px;
+}
+
+.messages-log-container::-webkit-scrollbar-thumb {
+  background: #4ecdc4;
+  border-radius: 4px;
+}
+
+.messages-log-container::-webkit-scrollbar-thumb:hover {
+  background: #3db8b0;
+}
+
+.message-entry {
+  transition: background-color 0.2s ease;
+}
+
+.message-entry:hover {
+  background-color: #2a2a2a;
+}
+
+.timestamp {
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+}
+
+.controls-container {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.control-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.control-item input[type="checkbox"] {
+  margin: 0;
+}
+
+.control-item input[type="number"] {
+  background: #1a1a1a;
+  border: 1px solid #444;
+  color: #fff;
+  border-radius: 2px;
+}
+
+.clear-button {
+  background: #ff6b6b !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 4px !important;
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  transition: background-color 0.2s ease !important;
+}
+
+.clear-button:hover {
+  background: #ff5252 !important;
+}
+
+/* Estilos para el formato horizontal de mensajes */
+.message-content {
+  line-height: 1.4;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.message-field-key {
+  color: #4ecdc4;
+  font-weight: bold;
+}
+
+.message-field-value {
+  color: #fff;
+}
+
+.message-field-separator {
+  color: #666;
+}
+
+.message-brace {
+  color: #ffd93d;
+  font-weight: bold;
+}
+
+.message-bracket {
+  color: #ffd93d;
+  font-weight: bold;
+}
+
+.message-comma {
+  color: #666;
+  margin-right: 4px;
+}
+
+/* Estilos para mensajes sin wrap */
+.message-no-wrap {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.message-no-wrap:hover {
+  position: relative;
+}
+
+.message-no-wrap:hover::after {
+  content: attr(data-full-content);
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px;
+  z-index: 1000;
+  max-width: 80vw;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 11px;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+}
+
+/* Estilos para el desplegable de campos */
+.fields-dropdown {
+  scrollbar-width: thin;
+  scrollbar-color: #4ecdc4 #1a1a1a;
+}
+
+.fields-dropdown::-webkit-scrollbar {
+  width: 6px;
+}
+
+.fields-dropdown::-webkit-scrollbar-track {
+  background: #1a1a1a;
+  border-radius: 3px;
+}
+
+.fields-dropdown::-webkit-scrollbar-thumb {
+  background: #4ecdc4;
+  border-radius: 3px;
+}
+
+.fields-dropdown::-webkit-scrollbar-thumb:hover {
+  background: #3db8b0;
+}
+
+.fields-dropdown label:hover {
+  background: #2a2a2a;
+  border-radius: 2px;
+}
+
+.fields-dropdown input[type="checkbox"] {
+  accent-color: #4ecdc4;
+}
+
+.field-buttons {
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+}
+
+.field-button {
+  border: none;
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.field-button-all {
+  background: #4ecdc4;
+  color: #000;
+}
+
+.field-button-all:hover {
+  background: #3db8b0;
+}
+
+.field-button-none {
+  background: #ff6b6b;
+  color: #fff;
+}
+
+.field-button-none:hover {
+  background: #ff5252;
+}

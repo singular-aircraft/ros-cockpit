@@ -40,7 +40,7 @@ function MessageRenderer({ data, showHex }) {
   }
 
   if (typeof data !== 'object' || data === null) {
-    return <span>{showHex ? toHex(data) : String(data)}</span>;
+    return <span className="message-field-value">{showHex ? toHex(data) : String(data)}</span>;
   }
 
   if (Array.isArray(data)) {
@@ -49,31 +49,32 @@ function MessageRenderer({ data, showHex }) {
       return <span style={{ color: '#888' }}>[Array length: {data.length}]</span>;
     }
     return (
-      <div style={{ paddingLeft: '1em' }}>
-        [
+      <span>
+        <span className="message-bracket">[</span>
         {data.map((item, index) => (
-          <div key={index}>
-            <MessageRenderer data={item} showHex={showHex} />,
-          </div>
+          <span key={index}>
+            <MessageRenderer data={item} showHex={showHex} />
+            {index < data.length - 1 && <span className="message-comma">, </span>}
+          </span>
         ))}
-        ]
-      </div>
+        <span className="message-bracket">]</span>
+      </span>
     );
   }
 
   return (
-    <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-      <tbody>
-        {Object.entries(data).map(([key, value]) => (
-          <tr key={key} style={{ border: '1px solid #444' }}>
-            <td style={{ padding: '4px', fontWeight: 'bold', verticalAlign: 'top', width: '150px' }}>{key}</td>
-            <td style={{ padding: '4px', verticalAlign: 'top' }}>
-              <MessageRenderer data={value} showHex={showHex} />
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <span className="message-content">
+      <span className="message-brace">{'{'}</span>
+      {Object.entries(data).map(([key, value], index) => (
+        <span key={key}>
+          <span className="message-field-key">{key}</span>
+          <span className="message-field-separator">: </span>
+          <MessageRenderer data={value} showHex={showHex} />
+          {index < Object.keys(data).length - 1 && <span className="message-comma">, </span>}
+        </span>
+      ))}
+      <span className="message-brace">{'}'}</span>
+    </span>
   );
 }
 
@@ -106,6 +107,16 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   const [graphServiceData, setGraphServiceData] = useState(null);
   const [graphServiceLoading, setGraphServiceLoading] = useState(false);
   const [graphServiceError, setGraphServiceError] = useState(null);
+  // Nuevos estados para el log
+  const [maxMessages, setMaxMessages] = useState(100);
+  const [showTimestamps, setShowTimestamps] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [wrapLines, setWrapLines] = useState(false);
+  const [selectedFields, setSelectedFields] = useState([]);
+  const [availableFields, setAvailableFields] = useState([]);
+  const [fieldsDropdownOpen, setFieldsDropdownOpen] = useState(false);
+  const messagesEndRef = useRef(null);
+  const logContainerRef = useRef(null);
 
   // Añadir referencias para D3
   const d3SimRef = useRef(null);
@@ -113,6 +124,20 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   const d3LinksRef = useRef([]);
   const d3SvgRef = useRef(null);
   const d3GRef = useRef(null);
+
+  // Función para hacer scroll automático al final del log
+  const scrollToBottom = () => {
+    if (autoScroll && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  };
+
+  // Efecto para scroll automático
+  useEffect(() => {
+    if (messages.length > 0) {
+      scrollToBottom();
+    }
+  }, [messages, autoScroll]);
 
   // Al montar, lee el topic guardado
   useEffect(() => {
@@ -270,8 +295,19 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
           messageType: type || 'std_msgs/String',
         });
         newListener.subscribe((message) => {
+          const timestamp = new Date();
+          const messageWithTimestamp = {
+            data: message,
+            timestamp: timestamp,
+            id: Date.now() + Math.random() // ID único para cada mensaje
+          };
+          
           setLatestMessage(message);
-          setMessages((prev) => [message, ...prev].slice(0, 10));
+          setMessages((prev) => {
+            const newMessages = [...prev, messageWithTimestamp];
+            return newMessages.slice(-maxMessages);
+          });
+          
           // Store timestamp for Hz calculation
           const now = Date.now();
           timestampsRef.current = [now, ...timestampsRef.current].slice(0, 10);
@@ -285,7 +321,7 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
       if (listener) listener.unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTopic, host]);
+  }, [selectedTopic, host, maxMessages]);
 
   // Filter topics by the filter string
   const filteredTopics = topics.filter((topic) => topic.toLowerCase().includes(filter.toLowerCase()));
@@ -387,7 +423,7 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
     const getValue = (msg, path) => {
       // Soporta path tipo 'data[0]' para arrays
       const parts = path.split('.');
-      let val = msg;
+      let val = msg.data || msg; // Acceder a msg.data si existe, sino usar msg directamente
       for (const p of parts) {
         const arrMatch = p.match(/(\w+)\[(\d+)\]/);
         if (arrMatch) {
@@ -811,6 +847,144 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
     });
   };
 
+  // Efecto para cerrar el desplegable cuando se hace clic fuera
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (fieldsDropdownOpen) {
+        setFieldsDropdownOpen(false);
+      }
+    };
+
+    if (fieldsDropdownOpen) {
+      document.addEventListener('click', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [fieldsDropdownOpen]);
+
+  // Función para extraer todos los campos disponibles de un mensaje
+  const extractAvailableFields = (data, prefix = '') => {
+    const fields = [];
+    
+    if (data === null || typeof data === 'undefined') {
+      return fields;
+    }
+    
+    if (typeof data !== 'object') {
+      return fields;
+    }
+    
+    if (Array.isArray(data)) {
+      if (data.length > 0) {
+        // Para arrays, extraer campos del primer elemento
+        const arrayFields = extractAvailableFields(data[0], prefix ? `${prefix}[0]` : '[0]');
+        fields.push(...arrayFields);
+      }
+      return fields;
+    }
+    
+    // Para objetos, extraer todos los campos
+    Object.entries(data).forEach(([key, value]) => {
+      const fieldPath = prefix ? `${prefix}.${key}` : key;
+      fields.push(fieldPath);
+      
+      // Recursivamente extraer campos de sub-objetos
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        const subFields = extractAvailableFields(value, fieldPath);
+        fields.push(...subFields);
+      }
+    });
+    
+    return fields;
+  };
+
+  // Actualizar campos disponibles cuando cambie el mensaje más reciente
+  useEffect(() => {
+    if (latestMessage) {
+      const fields = extractAvailableFields(latestMessage);
+      setAvailableFields(fields);
+      
+      // Si no hay campos seleccionados, seleccionar todos por defecto
+      if (selectedFields.length === 0) {
+        setSelectedFields(fields);
+      }
+    }
+  }, [latestMessage]);
+
+  // Función para filtrar mensaje según campos seleccionados
+  const filterMessageByFields = (data, fields) => {
+    if (fields.length === 0) return data;
+    
+    const filtered = {};
+    fields.forEach(field => {
+      const value = getValueFromPath(data, field);
+      if (value !== undefined) {
+        setValueAtPath(filtered, field, value);
+      }
+    });
+    
+    return filtered;
+  };
+
+  // Función auxiliar para obtener valor de una ruta
+  const getValueFromPath = (obj, path) => {
+    const parts = path.split('.');
+    let current = obj;
+    
+    for (const part of parts) {
+      if (current === null || current === undefined) return undefined;
+      
+      const arrayMatch = part.match(/^(\w+)\[(\d+)\]$/);
+      if (arrayMatch) {
+        const [, key, index] = arrayMatch;
+        current = current[key];
+        if (Array.isArray(current)) {
+          current = current[parseInt(index)];
+        } else {
+          return undefined;
+        }
+      } else {
+        current = current[part];
+      }
+    }
+    
+    return current;
+  };
+
+  // Función auxiliar para establecer valor en una ruta
+  const setValueAtPath = (obj, path, value) => {
+    const parts = path.split('.');
+    let current = obj;
+    
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      const arrayMatch = part.match(/^(\w+)\[(\d+)\]$/);
+      
+      if (arrayMatch) {
+        const [, key, index] = arrayMatch;
+        if (!current[key]) current[key] = [];
+        if (!current[key][parseInt(index)]) current[key][parseInt(index)] = {};
+        current = current[key][parseInt(index)];
+      } else {
+        if (!current[part]) current[part] = {};
+        current = current[part];
+      }
+    }
+    
+    const lastPart = parts[parts.length - 1];
+    const arrayMatch = lastPart.match(/^(\w+)\[(\d+)\]$/);
+    
+    if (arrayMatch) {
+      const [, key, index] = arrayMatch;
+      if (!current[key]) current[key] = [];
+      current[key][parseInt(index)] = value;
+    } else {
+      current[lastPart] = value;
+    }
+  };
+
   return (
     <div className="ros-monitor-widget">
       <div className="widget-header">
@@ -854,10 +1028,7 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
           {selectedTopic && (
             <div className="topic-info">
               <h3>
-                Topic: {selectedTopic}{' '}
-                <span style={{ color: '#aaa', fontWeight: 'normal' }}>
-                  ({hz.toFixed(2)} Hz)
-                </span>
+                Topic: {selectedTopic}
               </h3>
 
               {/* Verbose Topic Information */}
@@ -1023,18 +1194,209 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
 
               {viewMode === 'messages' && (
                 <div className="messages-view">
-                  <div style={{ marginBottom: '1em' }}>
-                    <label>
-                      <input type="checkbox" checked={showHex} onChange={(e) => setShowHex(e.target.checked)} />
-                      Show HEX
-                    </label>
+                  <div className="controls-container">
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+                      <label className="control-item">
+                        <input type="checkbox" checked={showHex} onChange={(e) => setShowHex(e.target.checked)} />
+                        Show HEX
+                      </label>
+                      <label className="control-item">
+                        <input type="checkbox" checked={showTimestamps} onChange={(e) => setShowTimestamps(e.target.checked)} />
+                        Show Timestamps
+                      </label>
+                      <label className="control-item">
+                        <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
+                        Auto-scroll
+                      </label>
+                      <label className="control-item">
+                        <input type="checkbox" checked={wrapLines} onChange={(e) => setWrapLines(e.target.checked)} />
+                        Wrap Lines
+                      </label>
+                      <div className="control-item">
+                        <label>Max messages:</label>
+                        <input 
+                          type="number" 
+                          value={maxMessages} 
+                          onChange={(e) => setMaxMessages(Math.max(1, parseInt(e.target.value) || 100))}
+                          min="1"
+                          max="1000"
+                          style={{ width: '60px', padding: '2px 4px' }}
+                        />
+                      </div>
+                      <button 
+                        onClick={() => setMessages([])}
+                        className="clear-button"
+                      >
+                        Clear Log
+                      </button>
+                      {availableFields.length > 0 && (
+                        <div className="control-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '4px', position: 'relative' }}>
+                          <label style={{ fontSize: '11px', color: '#ccc' }}>Fields to show:</label>
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFieldsDropdownOpen(!fieldsDropdownOpen);
+                            }}
+                            style={{
+                              background: '#2a2a2a',
+                              color: '#fff',
+                              border: '1px solid #444',
+                              borderRadius: '4px',
+                              padding: '4px 8px',
+                              fontSize: '11px',
+                              cursor: 'pointer',
+                              minWidth: '150px',
+                              textAlign: 'left',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center'
+                            }}
+                          >
+                            <span>{selectedFields.length} of {availableFields.length} fields</span>
+                            <span style={{ fontSize: '10px' }}>▼</span>
+                          </button>
+                          
+                          {fieldsDropdownOpen && (
+                            <div 
+                              className="fields-dropdown" 
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                position: 'absolute',
+                                top: '100%',
+                                left: 0,
+                                background: '#1a1a1a',
+                                border: '1px solid #444',
+                                borderRadius: '4px',
+                                padding: '8px',
+                                maxHeight: '200px',
+                                overflowY: 'auto',
+                                zIndex: 1000,
+                                minWidth: '200px',
+                                boxShadow: '0 4px 8px rgba(0,0,0,0.5)'
+                              }}
+                            >
+                              <div className="field-buttons" style={{ marginBottom: '8px', borderBottom: '1px solid #333', paddingBottom: '8px' }}>
+                                <button 
+                                  onClick={() => setSelectedFields(availableFields)}
+                                  className="field-button field-button-all"
+                                >
+                                  Select All
+                                </button>
+                                <button 
+                                  onClick={() => setSelectedFields([])}
+                                  className="field-button field-button-none"
+                                >
+                                  Select None
+                                </button>
+                              </div>
+                              
+                              {availableFields.map(field => (
+                                <label key={field} style={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  gap: '6px', 
+                                  padding: '2px 0',
+                                  fontSize: '11px',
+                                  cursor: 'pointer',
+                                  color: '#fff'
+                                }}>
+                                  <input 
+                                    type="checkbox"
+                                    checked={selectedFields.includes(field)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setSelectedFields([...selectedFields, field]);
+                                      } else {
+                                        setSelectedFields(selectedFields.filter(f => f !== field));
+                                      }
+                                    }}
+                                    style={{ margin: 0 }}
+                                  />
+                                  <span style={{ 
+                                    color: selectedFields.includes(field) ? '#4ecdc4' : '#ccc',
+                                    fontWeight: selectedFields.includes(field) ? 'bold' : 'normal'
+                                  }}>
+                                    {field}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <h4>Latest Message:</h4>
-                  {latestMessage ? (
-                    <MessageRenderer data={latestMessage} showHex={showHex} />
-                  ) : (
-                    <p>Waiting for the first message...</p>
-                  )}
+                  
+                  <div className="messages-log-container" ref={logContainerRef} style={{ 
+                    background: '#1a1a1a', 
+                    border: '1px solid #444', 
+                    borderRadius: '4px', 
+                    padding: '8px',
+                    maxHeight: '400px',
+                    overflowY: 'auto',
+                    fontFamily: 'monospace',
+                    fontSize: '12px'
+                  }}>
+                    {messages.length === 0 ? (
+                      <p style={{ color: '#888', textAlign: 'center', margin: '20px 0' }}>
+                        Waiting for messages...
+                      </p>
+                    ) : (
+                      <div>
+                        {messages.map((msg, index) => (
+                          <div 
+                            key={msg.id} 
+                            className="message-entry"
+                            style={{ 
+                              wordBreak: wrapLines ? 'break-word' : 'normal'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                              {showTimestamps && (
+                                <span className="timestamp" style={{ 
+                                  color: '#4ecdc4', 
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  whiteSpace: 'nowrap',
+                                  flexShrink: 0
+                                }}>
+                                  [{msg.timestamp.toLocaleTimeString()}]
+                                </span>
+                              )}
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div 
+                                  className={wrapLines ? '' : 'message-no-wrap'}
+                                  style={{ 
+                                    whiteSpace: wrapLines ? 'pre-wrap' : 'nowrap',
+                                    overflow: wrapLines ? 'visible' : 'hidden',
+                                    textOverflow: wrapLines ? 'clip' : 'ellipsis'
+                                  }}
+                                  title={wrapLines ? '' : 'Hover to see full message'}
+                                >
+                                  <MessageRenderer 
+                                    data={selectedFields.length > 0 ? filterMessageByFields(msg.data, selectedFields) : msg.data} 
+                                    showHex={showHex} 
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        <div ref={messagesEndRef} />
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div style={{ 
+                    marginTop: '8px', 
+                    fontSize: '11px', 
+                    color: '#888',
+                    display: 'flex',
+                    justifyContent: 'space-between'
+                  }}>
+                    <span>Total messages: {messages.length}</span>
+                    <span>Frequency: {hz.toFixed(2)} Hz</span>
+                  </div>
                 </div>
               )}
 
