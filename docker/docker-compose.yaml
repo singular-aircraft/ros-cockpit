@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  ros2_monitor:
+    container_name: ros_cockpit
+    restart: always
+    pull_policy: always
+    image: singularaircraft/ros-cockpit:latest
+    ports:
+      - "9090:9090"
+      - "5173:5173"
+    environment:
+      # --- Option 1: Download and install packages ---
+      # The command downloads a .deb from a private GitLab repo, installs it, and cleans up.
+      SETUP_COMMAND: '# Add your package installation commands here, e.g., downloading .deb files or installing from a custom source.'
+
+      # SETUP_COMMAND: 'apt-get install -y /debs/*.deb' # Example for installing from a mounted volume
+      # SETUP_COMMAND: 'apt-get install -y /debs/*.deb'
+
+    # --- [OPTIONAL] Mount local packages ---
+    # Place your .deb files in a local directory (e.g., ./custom_packages)
+    # and uncomment the following lines to make them available inside the container.
+    # volumes:
+    #   - ../custom_packages:/debs:ro

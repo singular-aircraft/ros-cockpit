@@ -27,4 +27,12 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           push: true
-          tags: singularaircraft/ros2-rosbridge:latest 
+          tags: singularaircraft/ros-cockpit:latest
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: singularaircraft/ros-cockpit
+          readme-filepath: ./README.md

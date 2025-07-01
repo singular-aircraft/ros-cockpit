@@ -1,62 +1,49 @@
-# Use Ubuntu 22.04 as base (for ROS 2 Humble)
 FROM ubuntu:22.04
 
-# Set non-interactive mode
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install ROS 2 Humble, rosbridge_suite, and Node.js
 RUN apt-get update && \
-    apt-get install -y curl gnupg2 lsb-release locales && \
-    locale-gen en_US en_US.UTF-8 && \
-    update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 && \
-    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | apt-key add - && \
-    echo "deb http://packages.ros.org/ros2/ubuntu jammy main" > /etc/apt/sources.list.d/ros2-latest.list && \
+    apt-get install -y \
+    software-properties-common \
+    curl \
+    git && \
+    add-apt-repository universe && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null && \
     apt-get update && \
-    apt-get install -y ros-humble-ros-base ros-humble-rosbridge-suite && \
+    apt-get install -y \
+    python3-pip \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    ros-humble-ros-base \
+    ros-humble-rosbridge-server && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Node.js and npm
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs
+RUN apt-get update && \
+    apt-get install -y ca-certificates curl gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    NODE_MAJOR=20 && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
 
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
-
-# Setup ROS environment
-SHELL ["/bin/bash", "-c"]
-RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
-ENV ROS_DISTRO=humble
-
-# Copy the entire project
-COPY . /app
 WORKDIR /app
 
-# Install frontend dependencies
+COPY package*.json ./
 RUN npm install
 
-# No build ni dist, ejecuta Vite en modo dev
-EXPOSE 5173 9090 8000
+COPY . .
 
-# Copy entrypoint and ROS2 utilities
-COPY entrypoint.sh /entrypoint.sh
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    colcon build --symlink-install --packages-select ros2_monitor_srvs && \
+    colcon build --symlink-install && \
+    rm -rf /var/lib/apt/lists/*"
+
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-COPY ros2_utils/ros2_graph_introspector.py /ros2_ws/ros2_graph_introspector.py
-COPY ros2_utils/topic_info_service.py /ros2_ws/topic_info_service.py
-RUN chmod +x /ros2_ws/topic_info_service.py
 
-# Instala colcon y build-essential para poder compilar el workspace ROS2
-RUN apt-get update && \
-    apt-get install -y python3-colcon-common-extensions build-essential
+EXPOSE 5173 9090
 
-# Copy the custom ROS2 service package
-COPY ros2_utils/ros2_monitor_srvs /ros2_ws/src/ros2_monitor_srvs
-
-# Build the ROS2 workspace (for custom services)
-RUN source /opt/ros/humble/setup.bash && \
-    cd /ros2_ws && \
-    colcon build --symlink-install
-
-# Source the workspace in the entrypoint
-RUN echo 'source /ros2_ws/install/setup.bash' >> /root/.bashrc
-
-ENTRYPOINT ["/entrypoint.sh"] 
+ENTRYPOINT ["/entrypoint.sh"]

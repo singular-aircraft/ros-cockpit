@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import rosInit from '../ros/rosbridge';
 import ROSLIB from 'roslib';
 import githubLogo from '../assets/github-mark.svg';
@@ -48,10 +48,52 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   const [latestMessage, setLatestMessage] = useState(null);
   const [listener, setListener] = useState(null);
   const [filter, setFilter] = useState('');
+  const timestampsRef = useRef([]);
   const [showHex, setShowHex] = useState(false);
-  const timestampsRef = useRef([]); // Store timestamps of received messages
   const [isConnected, setIsConnected] = useState(false);
+  const rosRef = useRef(null);
+  const maxMessagesRef = useRef(1000); // Store maxMessages in ref to avoid re-renders
+  const messagesRef = useRef([]); // Store messages in ref to avoid re-renders
   const [viewMode, setViewMode] = useState(initialViewMode === 'nodes' ? 'nodes' : 'messages');
+
+  useEffect(() => {
+    if (!host) return;
+
+    try {
+      const ros = rosInit(host);
+      rosRef.current = ros;
+      
+      ros.on('connection', () => {
+        console.log('Connected to ROS');
+        setIsConnected(true);
+        setError(null);
+      });
+
+      ros.on('close', () => {
+        console.log('Disconnected from ROS');
+        setIsConnected(false);
+        setError('Connection closed');
+      });
+
+      ros.on('error', (error) => {
+        console.error('ROS error:', error);
+        setIsConnected(false);
+        setError(`Connection error: ${error.message || 'Unknown error'}`);
+      });
+
+      // Cleanup
+      return () => {
+        if (rosRef.current) {
+          rosRef.current.close();
+          rosRef.current = null;
+        }
+      };
+    } catch (error) {
+      console.error('Failed to initialize ROS connection:', error);
+      setIsConnected(false);
+      setError(`Failed to connect: ${error.message || 'Invalid host'}`);
+    }
+  }, [host]);
   const chartCanvasRef = chartRef(null);
   const chartInstanceRef = chartRef(null);
   const [numericFields, setNumericFields] = useState([]);
@@ -79,6 +121,7 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   const [fieldsDropdownOpen, setFieldsDropdownOpen] = useState(false);
   const messagesEndRef = useRef(null);
   const logContainerRef = useRef(null);
+  const latestMessageRef = useRef(null);
 
   // Función para hacer scroll automático al final del log
   const scrollToBottom = () => {
@@ -95,6 +138,19 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
   }, [messages, autoScroll]);
 
   // Al montar, lee el topic guardado
+  useEffect(() => {
+    if (!host || !isConnected) return;
+    
+    const ros = rosRef.current;
+    if (!ros) return;
+
+    ros.getTopics((result) => {
+      const list = Array.isArray(result) ? result : (Array.isArray(result?.topics) ? result.topics : []);
+      setTopics(list);
+      setLoading(false);
+    });
+  }, [host, isConnected]);
+
   useEffect(() => {
     if (!panelId) {
       return;
@@ -129,37 +185,50 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
 
   // Function to fetch verbose topic information
   const fetchTopicInfo = (topicName) => {
+    if (!topicName || !host) return;
+
     setTopicInfoLoading(true);
-    setTopicInfo(null);
-    
-    const ros = rosInit(host);
-    
-    // Try to get verbose info using a custom ROS2 service
+
+    const ros = rosRef.current || rosInit(host);
     const topicInfoService = new ROSLIB.Service({
       ros: ros,
       name: '/get_topic_info',
       serviceType: 'ros2_monitor_srvs/GetTopicInfo'
     });
-    
+
     const request = new ROSLIB.ServiceRequest({
-      topic_name: topicName  // Pass topic name in the topic_name field
+      topic_name: topicName
     });
-    
+
     topicInfoService.callService(request, (result) => {
       if (result && result.success) {
+        const infoStr = result.raw_info || result.message || result.info || '';
+        let parsedInfo;
         try {
-          const parsedInfo = JSON.parse(result.message);
+          parsedInfo = typeof infoStr === 'string' ? JSON.parse(infoStr) : infoStr;
+        } catch (err) {
+          parsedInfo = null;
+        }
+        if (parsedInfo && typeof parsedInfo === 'object') {
           setTopicInfo({
-            name: topicName,
-            type: parsedInfo.type || 'Unknown',
+            type: parsedInfo.type || parsedInfo.msg_type || 'std_msgs/String',
             publishers: parsedInfo.publishers || [],
             subscribers: parsedInfo.subscribers || [],
-            publisherCount: parsedInfo.publisher_count || 0,
-            subscriberCount: parsedInfo.subscriber_count || 0,
+            publisherCount: parsedInfo.publisher_count || parsedInfo.publisherCount || 0,
+            subscriberCount: parsedInfo.subscriber_count || parsedInfo.subscriberCount || 0,
             rawInfo: parsedInfo
           });
-        } catch (error) {
-          setTopicInfo({ error: 'Error parsing topic information' });
+        } else {
+          // could not parse JSON, keep raw text
+          setTopicInfo({
+            type: 'Unknown',
+            publishers: [],
+            subscribers: [],
+            publisherCount: 0,
+            subscriberCount: 0,
+            rawInfo: infoStr,
+            error: 'Could not parse topic information, showing raw'
+          });
         }
       } else {
         // Fallback to basic info
@@ -169,6 +238,7 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
     }, (error) => {
       // Fallback to basic info
       fetchBasicTopicInfo(topicName, ros);
+      setTopicInfoLoading(false);
     });
   };
 
@@ -182,7 +252,6 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
       }
       
       const topicInfo = {
-        name: topicName,
         type: type,
         publishers: ['Publisher info not available via WebSocket'],
         subscribers: ['Subscriber info not available via WebSocket'],
@@ -239,24 +308,21 @@ function RosMonitorWidget({ panelId, host, viewMode: initialViewMode }) {
           name: selectedTopic,
           messageType: type || 'std_msgs/String',
         });
-        newListener.subscribe((message) => {
+        const handleMessage = (message) => {
           const timestamp = new Date();
           const messageWithTimestamp = {
             data: message,
             timestamp: timestamp,
-            id: Date.now() + Math.random() // ID único para cada mensaje
+            id: Date.now() + Math.random()
           };
-          
-          setLatestMessage(message);
-          setMessages((prev) => {
-            const newMessages = [...prev, messageWithTimestamp];
-            return newMessages.slice(-maxMessages);
-          });
-          
-          // Store timestamp for Hz calculation
+          latestMessageRef.current = message;
+          messagesRef.current = [...messagesRef.current, messageWithTimestamp].slice(-maxMessagesRef.current);
           const now = Date.now();
           timestampsRef.current = [now, ...timestampsRef.current].slice(0, 10);
-        });
+          setLatestMessage(message);
+          setMessages([...messagesRef.current]);
+        };
+        newListener.subscribe(handleMessage);
         setListener(newListener);
       });
     }

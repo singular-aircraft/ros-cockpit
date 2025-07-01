@@ -12,6 +12,7 @@ class TopicInfoService(Node):
         super().__init__('topic_info_service')
         self.srv = self.create_service(GetTopicInfo, 'get_topic_info', self.get_topic_info_callback)
         self.get_logger().info('Topic Info Service started')
+        print("Topic Info Service started")
 
     def get_topic_info_callback(self, request, response):
         try:

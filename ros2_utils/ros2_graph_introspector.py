@@ -7,7 +7,9 @@ class GraphIntrospectorService(Node):
     def __init__(self):
         super().__init__('graph_introspector_service')
         self.srv = self.create_service(GetGraphInfo, 'get_graph_info', self.handle_get_graph_info)
-
+        self.get_logger().info('Graph Introspector Service started')
+        print("Graph Introspector Service started")
+        
     def handle_get_graph_info(self, request, response):
         graph = self.build_graph()
         response.graph_json = json.dumps(graph)

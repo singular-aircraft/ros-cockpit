@@ -225,4 +225,4 @@ const NodesGraphView = ({
   );
 };
 
-export default NodesGraphView; 
+export default NodesGraphView;

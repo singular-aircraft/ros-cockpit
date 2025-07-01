@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { DockviewReact } from 'dockview-react';
 import 'dockview-react/dist/styles/dockview.css';
 import RosMonitorWidget from './components/RosMonitorWidget';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const LAYOUT_KEY = 'dockview_layout_v1';
 
@@ -21,12 +22,29 @@ function App() {
     let ros;
     let isUnmounted = false;
     import('./ros/rosbridge').then((mod) => {
-      ros = mod.default(host);
-      rosRef.current = ros;
+      try {
+        ros = mod.default(host);
+        rosRef.current = ros;
+        setIsConnected(false);
+        ros.on('connection', () => { 
+          if (!isUnmounted) setIsConnected(true);
+        });
+        ros.on('close', () => { 
+          if (!isUnmounted) setIsConnected(false);
+        });
+        ros.on('error', (error) => { 
+          if (!isUnmounted) {
+            setIsConnected(false);
+            console.error('ROS connection error:', error);
+          }
+        });
+      } catch (error) {
+        console.error('Failed to connect to ROS:', error);
+        setIsConnected(false);
+      }
+    }).catch((error) => {
+      console.error('Failed to load ROS bridge:', error);
       setIsConnected(false);
-      ros.on('connection', () => { if (!isUnmounted) setIsConnected(true); });
-      ros.on('close', () => { if (!isUnmounted) setIsConnected(false); });
-      ros.on('error', () => { if (!isUnmounted) setIsConnected(false); });
     });
     return () => {
       isUnmounted = true;
@@ -111,7 +129,8 @@ function App() {
   };
 
   return (
-    <div style={{ height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column' }}>
+    <ErrorBoundary>
+      <div style={{ height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column' }}>
       {/* Top header */}
       <div style={{ height: 56, background: '#23272f', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', boxShadow: '0 2px 8px #0002', zIndex: 30 }}>
         <div style={{ fontWeight: 700, fontSize: 22, color: '#fff', letterSpacing: 1 }}>ROS2 Monitor</div>
@@ -124,7 +143,7 @@ function App() {
             style={{
               width: 260,
               borderRadius: 4,
-              border: '1px solid #888',
+              border: isConnected ? '1px solid #646cff' : '1px solid #c00',
               fontSize: 15,
               padding: '6px 10px',
               background: '#181a20',
@@ -133,6 +152,16 @@ function App() {
             }}
             title="rosbridge host"
           />
+          {isConnected ? null : (
+            <div style={{
+              marginLeft: 8,
+              color: '#c00',
+              fontSize: 12,
+              fontWeight: 500
+            }}>
+              Connection failed. Please check the host and try again.
+            </div>
+          )}
           <span style={{ display: 'inline-block', width: 14, height: 14, borderRadius: '50%', background: isConnected ? '#0a0' : '#c00', border: '1px solid #222', marginRight: 6 }}></span>
           <span style={{ color: isConnected ? '#0a0' : '#c00', fontWeight: 600, fontSize: 15 }}>
             {isConnected ? 'Connected' : 'Disconnected'}
@@ -212,6 +241,7 @@ function App() {
         </div>
       </div>
     </div>
+    </ErrorBoundary>
   );
 }
 
