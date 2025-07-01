@@ -16,6 +16,7 @@ const NodesGraphView = ({
 
   useEffect(() => {
     console.log('Efecto D3 ejecutado', { graphServiceData, panelId });
+    console.log('graphServiceData received:', graphServiceData);
     const containerId = `d3-nodes-graph-${panelId}`;
     const container = document.getElementById(containerId);
     console.log('containerId:', containerId, 'container:', container);
@@ -40,12 +41,23 @@ const NodesGraphView = ({
       if (!isFiltered(sub.topic))
         links.push({ source: sub.topic, target: sub.node, type: 'subscribe' });
     });
-    if (graphServiceData.service_providers) {
-      graphServiceData.service_providers.forEach(sp => {
-        if (!isFiltered(sp.service))
-          links.push({ source: sp.node, target: sp.service, type: 'service' });
-      });
-    }
+    // Add links for services to their providing nodes
+    (graphServiceData.services || []).forEach(service => {
+      // Ensure both service and node exist before creating a link
+      const serviceNodeExists = allNodes.some(n => n.id === service.name && n.type === 'service');
+      const providerNodeExists = allNodes.some(n => n.id === service.node && n.type === 'node');
+      if (serviceNodeExists && providerNodeExists) {
+        links.push({ source: service.name, target: service.node, type: 'service_link' });
+      }
+    });
+    // Add links for service clients to the services they consume
+    (graphServiceData.service_clients || []).forEach(client => {
+      const clientNodeExists = allNodes.some(n => n.id === client.node && n.type === 'node');
+      const serviceExists = allNodes.some(n => n.id === client.service && n.type === 'service');
+      if (clientNodeExists && serviceExists) {
+        links.push({ source: client.node, target: client.service, type: 'client_link' });
+      }
+    });
     const nodeList = allNodes;
     const width = container.offsetWidth || 600;
     const height = container.offsetHeight || 400;
@@ -114,9 +126,21 @@ const NodesGraphView = ({
     linkSel.exit().remove();
     linkSel.enter()
       .append('line')
-      .attr('stroke', '#ffd93d')
-      .attr('stroke-width', 10)
-      .attr('stroke-dasharray', d => d.type === 'service' ? '4,2' : '')
+      .attr('stroke', d => {
+        if (d.type === 'service_link') return '#6495ED'; // Darker blue for service links
+        if (d.type === 'client_link') return '#FFA500'; // Orange for client links
+        return '#ffd93d'; // Default color
+      })
+      .attr('stroke-width', d => {
+        if (d.type === 'service_link') return 2;
+        if (d.type === 'client_link') return 2;
+        return 10;
+      })
+      .attr('stroke-dasharray', d => {
+        if (d.type === 'service_link') return '4,2';
+        if (d.type === 'client_link') return '2,2'; // Dotted for client links
+        return '';
+      })
       .attr('marker-end', 'url(#arrowhead)');
     // --- Data join para nodos ---
     const nodeSel = g.selectAll('circle').data(nodeList, d => d.id);
@@ -126,7 +150,12 @@ const NodesGraphView = ({
       .attr('stroke', '#fff')
       .attr('stroke-width', 2)
       .attr('r', d => d.type === 'node' ? 44 : d.type === 'topic' ? 32 : 24)
-      .attr('fill', d => d.type === 'node' ? '#2ecc40' : d.type === 'topic' ? '#43e' : '#fa0')
+      .attr('fill', d => {
+        if (d.type === 'node') return '#2ecc40';
+        if (d.type === 'topic') return '#43e';
+        if (d.type === 'service') return '#87CEEB'; // Lighter blue for services
+        return '#fff'; // Default color
+      })
       .call(d3.drag()
         .on('start', dragstarted)
         .on('drag', dragged)

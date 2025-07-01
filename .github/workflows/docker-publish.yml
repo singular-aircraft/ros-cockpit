@@ -35,4 +35,4 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: singularaircraft/ros-cockpit
-          readme-filepath: ./README.md
+          readme-filepath: ./docker/README.md
